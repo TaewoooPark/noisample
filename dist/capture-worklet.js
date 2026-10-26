@@ -36,7 +36,7 @@ class PeakCaptureProcessor extends AudioWorkletProcessor {
     };
   }
   beginCapture() {
-    const buffer = new Float32Array(Math.round(sampleRate * 0.36));
+    const buffer = new Float32Array(Math.round(sampleRate * 1.8));
     for (let i = 0; i < this.preLength; i++) buffer[i] = this.pre[(this.preCursor + i) % this.preLength];
     this.capture = {buffer, length:this.preLength, quiet:0, peak:0, generation:this.generation};
     this.armed = false;
@@ -87,7 +87,7 @@ class PeakCaptureProcessor extends AudioWorkletProcessor {
       capture.length += copyLength;
       capture.peak = Math.max(capture.peak, peak);
       capture.quiet = rms < baseThreshold * 0.7 ? capture.quiet + n : 0;
-      if (capture.length >= capture.buffer.length || (capture.length >= sampleRate * 0.16 && capture.quiet > sampleRate * 0.055)) this.finishCapture();
+      if (capture.length >= capture.buffer.length || (capture.length >= sampleRate * 0.8 && capture.quiet >= sampleRate * 0.24)) this.finishCapture();
     }
     for (let i = 0; i < n; i++) { this.pre[this.preCursor] = input[i]; this.preCursor = (this.preCursor + 1) % this.preLength; }
     this.previousRms = rms;

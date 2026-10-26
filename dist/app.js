@@ -17,6 +17,7 @@ let width = 0;
 let height = 0;
 let frameId;
 let geometry;
+let captureStarted = null;
 
 const stateDescriptions = {
   idle: '화면을 터치하고 마이크 사용을 허용하세요.',
@@ -30,16 +31,22 @@ const stateDescriptions = {
 const engine = new BeatEngine({
   onState(next) {
     state = next;
+    if (next !== 'running') captureStarted = null;
     document.documentElement.dataset.state = next;
     status.textContent = stateDescriptions[next] || stateDescriptions.error;
     canvas.setAttribute('aria-label', status.textContent);
   },
   onCapture(sample) {
     const now = performance.now();
+    captureStarted = null;
     arrivals.set(sample.id, now);
     flights.push({ sample, born: now });
     // All presentation state is bounded alongside the engine's sample bank.
     if (arrivals.size > 100) arrivals.delete(arrivals.keys().next().value);
+  },
+  onLevels(level) {
+    if (level.capturing) captureStarted ??= performance.now();
+    else captureStarted = null;
   },
   onHit(hit) {
     const when = performance.now() + Math.max(0, hit.delayMs || 0);
@@ -133,11 +140,19 @@ function drawWave(now) {
   }
   ctx.stroke();
   ctx.restore();
+  if (captureStarted !== null) {
+    const elapsed = (now - captureStarted) / 1000 + 0.032;
+    const selectionWidth = Math.min(length, Math.max(2, elapsed / 4 * length));
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.035)';
+    ctx.fillRect(right - selectionWidth, waveY - waveHeight - 3, selectionWidth, waveHeight * 2 + 6);
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 0.75;
+    ctx.strokeRect(right - selectionWidth, waveY - waveHeight - 3, selectionWidth, waveHeight * 2 + 6);
+  }
   ctx.fillStyle = '#fff'; ctx.fillRect(right - 12, waveY - 15, 26, 30);
   drawMic(right, waveY, now);
 }
 
-function sampleShape(sample, x, y, w, h, active = false, opacity = 1) {
+function sampleShape(sample, x, y, w, h, active = false, opacity = 1, from = 0, to = 1) {
   if (w <= 0 || h <= 0) return;
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -150,7 +165,8 @@ function sampleShape(sample, x, y, w, h, active = false, opacity = 1) {
   ctx.strokeStyle = active ? '#fff' : '#111'; ctx.lineWidth = 0.8;
   ctx.beginPath();
   for (let i = 0; i < columns; i++) {
-    const val = Math.abs(peaks[Math.floor(i / columns * peaks.length)] || 0.03);
+    const index = Math.min(peaks.length - 1, Math.floor((from + i / columns * (to - from)) * peaks.length));
+    const val = Math.abs(peaks[index] || 0.03);
     const a = Math.max(0.7, Math.min(1, val) * (h / 2 - 3));
     const px = x + 2 + (w - 4) * i / Math.max(1, columns - 1);
     ctx.moveTo(px, y - a); ctx.lineTo(px, y + a);
@@ -159,8 +175,8 @@ function sampleShape(sample, x, y, w, h, active = false, opacity = 1) {
 }
 
 function blockWidth(sample) {
-  const multiplier = sample.lane === 2 ? 1.7 : sample.lane === 4 ? 1.3 : 0.82;
-  return Math.max(5, Math.min(42, geometry.step * multiplier));
+  const secondsPerStep = 60 / engine.bpm / 4;
+  return Math.max(5, sample.duration / secondsPerStep * geometry.step);
 }
 
 function drawSequencer(now) {
@@ -184,9 +200,15 @@ function drawSequencer(now) {
         const fade = Math.min(1, Math.max(0, (age - (reducedMotion ? 100 : 660) - i * 16) / 140));
         const hitAt = hits.get(`${sample.id}:${s}`) || -10000;
         const sinceHit = now - hitAt;
-        const active = sinceHit >= 0 && sinceHit < 105;
-        const w = Math.min(blockWidth(sample), right - (left + s * step));
-        sampleShape(sample, left + s * step, y, w, blockHeight, active, fade);
+        const active = sinceHit >= 0 && sinceHit < sample.duration * 1000;
+        const fullWidth = blockWidth(sample);
+        const x = left + s * step;
+        const w = Math.min(fullWidth, right - x);
+        sampleShape(sample, x, y, w, blockHeight, active, fade, 0, w / fullWidth);
+        // Clips can continue across the two-bar boundary without being cut.
+        if (fullWidth > w) {
+          sampleShape(sample, left, y, fullWidth - w, blockHeight, active, fade, w / fullWidth, 1);
+        }
       }
     }
   }
@@ -206,7 +228,8 @@ function drawFlights(now) {
     const age = now - flight.born;
     if (reducedMotion) continue;
     const sample = flight.sample;
-    const startX = right - Math.min(90, geometry.length * 0.18);
+    const captureWidth = Math.min(geometry.length * 0.48, Math.max(24, sample.duration / 4 * geometry.length));
+    const startX = right - captureWidth;
     const destX = left + sample.steps[0] * step;
     const destY = top + sample.lane * gap;
     const p = Math.min(1, Math.max(0, (age - 160) / 500));
@@ -214,8 +237,8 @@ function drawFlights(now) {
     const x = startX + (destX - startX) * ease;
     const y = waveY + (destY - waveY) * ease;
     const h = Math.min(26, gap * 0.42);
-    const captureWidth = Math.min(62, geometry.length * 0.14);
-    const w = (captureWidth + (blockWidth(sample) - captureWidth) * ease) * Math.min(1, age / 130);
+    const targetWidth = Math.min(blockWidth(sample), right - destX);
+    const w = (captureWidth + (targetWidth - captureWidth) * ease) * Math.min(1, age / 130);
     if (p < 1) {
       // A stretched trace lets the original cut visibly travel into its lane.
       ctx.save(); ctx.globalAlpha = Math.sin(p * Math.PI) * 0.20;
@@ -231,7 +254,7 @@ function drawFlights(now) {
       const expand = (age - 660) / 35;
       ctx.save(); ctx.globalAlpha = alpha * 0.35;
       ctx.strokeStyle = '#111'; ctx.lineWidth = 0.8;
-      ctx.strokeRect(destX - expand, destY - h / 2 - expand, blockWidth(sample) + expand * 2, h + expand * 2);
+      ctx.strokeRect(destX - expand, destY - h / 2 - expand, targetWidth + expand * 2, h + expand * 2);
       ctx.restore();
     }
   }

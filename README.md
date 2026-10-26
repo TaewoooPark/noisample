@@ -25,7 +25,7 @@
 
 A cup meets a table. A chair shifts. Someone laughs across the room. These sounds pass through the day without asking to become music. Repeat one of them, and something changes: you begin to expect its return. An accident acquires a place in time.
 
-Nois(ampl)e makes that small change audible. The microphone catches brief peaks, cuts them into samples and gives them positions in a steady beat. The clock stays at 120 BPM while the room supplies the texture. A familiar rhythm holds together sounds that have never met before.
+Nois(ampl)e makes that small change audible. A peak opens a recording window long enough to keep a voice, a scrape or a sound's decay recognizable. That recording returns at its original pitch and speed, given a place in a steady beat. The clock stays at 120 BPM while the room supplies the texture. A familiar rhythm holds together sounds that have never met before.
 
 Read the parentheses in **Nois(ampl)e** as an amplifier inside noise: a reminder that attention can make an ordinary sound feel larger. The screen follows the same idea. One passing waveform becomes six lines of recurring fragments. There are no visible words or instrument controls to negotiate; you make a sound and hear what happens to it.
 
@@ -56,22 +56,22 @@ Keep the page open while playing. Headphones help separate the room's sound from
 5. Refresh. Let this room's rhythm go and start another.
 ```
 
-Sampling, placement and playback are automatic. Each session chooses one of six two-bar presets: three boom bap grooves and three trap grooves. All use 4/4 at 120 BPM. There is no genre selector; a fresh session makes a fresh choice.
+Sampling, placement and playback are automatic. Each session chooses one of six two-bar presets: three boom bap grooves and three trap grooves. All use 4/4 at 120 BPM. Longer recordings use fewer of a lane's preset positions so they can play to the end without overlapping themselves. There is no genre selector; a fresh session makes a fresh choice.
 
 ## Six voices, one room
 
-| Lane, top to bottom | How the recording becomes an instrument |
+| Lane, top to bottom | The recording's role in the rhythm |
 |---|---|
-| Kick | A short loop cut from the recording, filtered low with a falling pitch and a trace of the original attack. |
-| Snare | A clipped, high-pass version of the recorded texture with a quick decay. |
-| Bass | A looped grain from the recording, filtered and repitched into a repeating low phrase. |
-| Closed hi-hat | Driven, normalized high-frequency detail, pitched up and cut short. |
-| Open hi-hat | A brighter version of the texture with a longer decay. |
-| Percussion | A brief, band-pass accent that retains some of the source's character. |
+| Kick | Anchors selected kick positions with the complete recording. |
+| Snare | Returns at the groove's backbeat positions. |
+| Bass | Follows the bass pattern's timing, without changing the recording's pitch. |
+| Closed hi-hat | Uses spaced positions from the hat pattern; the recording is never shortened to fit. |
+| Open hi-hat | Places the complete recording at the pattern's open-hat accents. |
+| Percussion | Adds the recording at syncopated accent positions. |
 
-Low-frequency energy, brightness, zero crossings and decay guide the assignment. Empty lanes take priority so the first six accepted sounds fill the instrument. Each lane holds up to three recordings, limited by its available pattern positions; new arrivals eventually replace its oldest sound. The rhythm stays legible while its material changes.
+Low-frequency energy, brightness, zero crossings and decay guide the assignment; this analysis does not alter the recording. Empty lanes take priority so the first six accepted sounds fill the instrument. Each lane holds up to three recordings, limited by the positions that can fit complete clips; new arrivals eventually replace its oldest sound. A lane's pattern can become sparser as longer sounds arrive, and resets with the session.
 
-Every voice starts with captured microphone audio. The instrument uses no prerecorded drum pack, generative model or remote audio service.
+The instrument names describe rhythmic roles, not sound transformations. Every lane plays its captured audio in full at its original pitch and speed. There is no pitch shifting, filtering, distortion, normalization, grain looping or drum-shaped decay. A voice assigned to the kick lane remains that voice. The instrument uses no prerecorded drum pack, generative model or remote audio service.
 
 ## A small control dictionary
 
@@ -84,15 +84,21 @@ Every voice starts with captured microphone audio. The instrument uses no prerec
 | Crossed microphone | Access was denied or the microphone could not connect. Check the browser's site permissions, then touch again. |
 | Pause mark | Audio was interrupted; touch to resume. |
 | Moving vertical line | The current position in the two-bar loop. |
+| Expanding selection around the input waveform | A longer recording is being collected. |
+| Width of a sample block | The recording's actual duration; it stays dark for its complete playback. |
 | Refresh icon / browser reload | Discards every sample and starts an empty session. |
 
 Status messages are available to screen readers. Reduced-motion preferences remove the traveling sample animation while preserving the waveform and timing display.
 
 ## From a peak to a pulse
 
-An `AudioWorklet` measures the input against an adaptive noise floor. A minimum threshold, onset check, quiet rearm period and cooldown keep silence and sustained sounds from filling the sampler repeatedly. Captures include a short pre-roll and last roughly 160–360 ms. Playback-aware thresholding and browser echo cancellation help reduce self-triggering.
+An `AudioWorklet` measures the input against an adaptive noise floor. A minimum threshold, onset check, quiet rearm period and cooldown keep silence and sustained sounds from filling the sampler repeatedly. Captures include 32 ms of pre-roll and last roughly **0.8–1.8 seconds**. After the minimum duration, a recording ends when the sound has stayed quiet for 240 ms, or when the maximum duration is reached. Short pauses within a phrase can remain inside the recording.
 
-The captured fragment is cleaned, shaped for its assigned voice and placed on the selected pattern. It becomes playable at a sixteenth-note boundary after its placement animation. Web Audio's clock schedules the sound independently of the canvas animation; swing, velocity accents and small bass variations give the fixed pattern movement.
+The captured PCM is copied unchanged into the playback buffer. Every role uses that buffer once, from beginning to end, at playback rate 1. Only a 3 ms fade at each edge prevents boundary clicks; one fixed master gain leaves headroom for six lanes. The recording's natural volume changes and decay remain intact. There is no compressor or role-specific processing.
+
+The clip becomes playable at a sixteenth-note boundary after its placement animation. Web Audio's clock schedules the sound independently of the canvas animation. The selected groove supplies the timing and swing, while complete recordings supply the sound. Lane spacing accounts for each clip's duration and the loop boundary; a new start is skipped if the previous clip in that lane is still playing.
+
+Playback-aware thresholding and the browser's microphone echo cancellation help reduce self-triggering. Echo cancellation is requested at capture time, while browser noise suppression and automatic gain control are disabled. Device and browser microphone processing can still affect the input they deliver.
 
 The threshold uses **dBFS**, the microphone signal's digital level. It is not a calibrated measurement of environmental sound pressure in dB SPL. Sensitivity and feedback depend on the device, its speaker level and the room.
 

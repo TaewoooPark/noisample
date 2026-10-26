@@ -45,12 +45,12 @@ for (const sampleRate of [44100,48000]) {
   });
   test(`isolated transient retains preroll and emits once at ${sampleRate} Hz`, () => {
     const d=detector(sampleRate);
-    d.feed(.2);d.feed(.06,tone(.6));d.feed(.5);
+    d.feed(.2);d.feed(.06,tone(.6));d.feed(.9);
     assert.equal(d.captures().length,1);
     const capture=d.captures()[0];
     assert.equal(capture.sampleRate,sampleRate);
     assert.equal(capture.generation,0);
-    assert.ok(capture.pcm.length>=sampleRate*.16 && capture.pcm.length<=sampleRate*.36);
+    assert.ok(capture.pcm.length>=sampleRate*.8 && capture.pcm.length<=sampleRate*1.8);
     assert.ok(capture.pcm.subarray(0,Math.floor(sampleRate*.02)).every(v=>v===0), 'pre-roll contains preceding silence');
     assert.ok(capture.pcm.some(v=>Math.abs(v)>.5));
   });
@@ -59,30 +59,30 @@ for (const sampleRate of [44100,48000]) {
 test('a sustained tone is captured once, then a new sound can retrigger after quiet',()=>{
   const d=detector();d.feed(.2);d.feed(2,tone(.3));
   assert.equal(d.captures().length,1);
-  d.feed(.5);d.feed(.06,tone(.6,1500));d.feed(.4);
+  d.feed(.5);d.feed(.06,tone(.6,1500));d.feed(.9);
   assert.equal(d.captures().length,2);
 });
 test('a short repeated transient during cooldown does not become a duplicate sample',()=>{
-  const d=detector();d.feed(.2);d.feed(.04,tone(.6));d.feed(.2);d.feed(.04,tone(.6));d.feed(.5);
+  const d=detector();d.feed(.2);d.feed(.04,tone(.6));d.feed(.80);d.feed(.04,tone(.6));d.feed(.9);
   assert.equal(d.captures().length,1);
 });
 test('reset abandons a partial sample and tags all later samples with the new generation',()=>{
   const d=detector();d.feed(.2);d.feed(.04,tone(.6));
   d.processor.port.onmessage({data:{type:'reset',generation:7}});
   d.feed(.4);assert.equal(d.captures().length,0);
-  d.feed(.06,tone(.6));d.feed(.4);
+  d.feed(.06,tone(.6));d.feed(.9);
   assert.equal(d.captures().length,1);assert.equal(d.captures()[0].generation,7);
 });
 test('render quanta may differ from 128 samples and still retain transient audio',()=>{
   for(const quantum of [64,256,511]) {
-    const d=detector(48000,quantum);d.feed(.2);d.feed(.06,tone(.6));d.feed(.5);
+    const d=detector(48000,quantum);d.feed(.2);d.feed(.06,tone(.6));d.feed(.9);
     assert.equal(d.captures().length,1);
   }
 });
 test('a louder peak remains detectable after sustained ambient noise',()=>{
   const d=detector();d.feed(.2);d.feed(3,noise(.07));
   const count=d.captures().length;
-  d.feed(.08,tone(.7));d.feed(.5,noise(.07));
+  d.feed(.08,tone(.7));d.feed(1.9,noise(.07));
   assert.equal(d.captures().length,count+1, 'room noise must not latch the detector closed forever');
 });
 test('both rhythm families provide six valid two-bar 4/4 lanes',()=>{
@@ -96,6 +96,34 @@ test('both rhythm families provide six valid two-bar 4/4 lanes',()=>{
       assert.equal(new Set(lane).size,lane.length);
     }
     assert.ok(preset.swing>=0&&preset.swing<.5);
+  }
+});
+test('a multi-syllable sound retains its later syllables and natural pause',()=>{
+  const sampleRate=48000;
+  const d=detector(sampleRate);
+  d.feed(.2);
+  d.feed(.15,tone(.6,300));
+  d.feed(.13);
+  d.feed(.22,tone(.35,700));
+  d.feed(.16);
+  d.feed(.35,tone(.45,1200));
+  d.feed(.4);
+  assert.equal(d.captures().length,1,'short gaps inside a phrase must not split it');
+  const {pcm}=d.captures()[0];
+  assert.ok(pcm.length>=sampleRate*1.2 && pcm.length<=sampleRate*1.8);
+  assert.ok(pcm.subarray(Math.round(sampleRate*.8),Math.round(sampleRate*1.0)).some(value=>Math.abs(value)>.4),'the late syllable survives beyond the former 360 ms limit');
+  assert.ok(pcm.subarray(Math.round(sampleRate*.20),Math.round(sampleRate*.28)).every(value=>value===0),'the internal pause stays silent instead of being removed');
+  const expected=Float32Array.from({length:Math.round(sampleRate*.15)},(_,i)=>tone(.6,300)((Math.round(sampleRate*.2)+i)/sampleRate));
+  assert.deepEqual(pcm.subarray(Math.round(sampleRate*.032),Math.round(sampleRate*.032)+expected.length),expected,'captured source samples retain their amplitude, pitch and phase');
+});
+test('a continuing sound is bounded to 1.8 seconds without a short drum cutoff',()=>{
+  for(const sampleRate of [44100,48000]){
+    const d=detector(sampleRate);
+    d.feed(.2);d.feed(2.0,tone(.4,330));
+    assert.equal(d.captures().length,1);
+    const {pcm}=d.captures()[0];
+    assert.equal(pcm.length,Math.round(sampleRate*1.8));
+    assert.ok(pcm.subarray(Math.round(sampleRate*1.7)).some(value=>Math.abs(value)>.35),'recording continues through the end of its longer window');
   }
 });
 test('classifier fills every instrument before replacing existing recordings',()=>{
@@ -123,8 +151,8 @@ test('transport is exactly 120 BPM, wraps at 32 steps and clears all samples on 
 test('sample banks are bounded and every accepted open-hat sample owns audible pattern steps',()=>{
   const engine=new BeatEngine();engine.preset=GROOVE_PRESETS.find(p=>p.name==='trap-1');
   engine.context={currentTime:0,createBuffer(channels,length,sampleRate){return {duration:length/sampleRate,copyToChannel(){}};}};
-  engine.samples=Array.from({length:6},(_,lane)=>lane===4 ? [] : Array.from({length:3},(_,i)=>({id:-(lane*3+i+1),steps:[]})));
-  const pcm=Float32Array.from({length:8192},(_,i)=>i%2?.5:-.5);
+  engine.samples=Array.from({length:6},(_,lane)=>lane===4 ? [] : Array.from({length:3},(_,i)=>({id:-(lane*3+i+1),duration:1.2,steps:[]})));
+  const pcm=Float32Array.from({length:57600},(_,i)=>i%2?.5:-.5);
   for(let repeat=0;repeat<12;repeat++){
     engine._acceptSample({pcm,sampleRate:48000,peak:.5});
     for(const bank of engine.samples)assert.ok(bank.length<=3,'sample memory stays bounded');
@@ -133,7 +161,13 @@ test('sample banks are bounded and every accepted open-hat sample owns audible p
     assert.ok(bank.every(sample=>sample.steps.length>0),'newly accepted samples must have playback steps');
     const steps=bank.flatMap(sample=>sample.steps);
     assert.equal(new Set(steps).size,steps.length,'one sample owns each lane step');
-    assert.deepEqual([...steps].sort((a,b)=>a-b),[...engine.preset.lanes[4]].sort((a,b)=>a-b));
+    assert.ok(steps.every(step=>engine.preset.lanes[4].includes(step)),'all retained onsets still belong to the selected groove');
+    const sorted=[...steps].sort((a,b)=>a-b);
+    for(let i=0;i<sorted.length;i++){
+      const start=sorted[i]*.125;
+      const next=sorted[(i+1)%sorted.length]*.125+(i===sorted.length-1?4:0);
+      assert.ok(next-start>=1.2,'complete samples have room before the next onset, including the loop seam');
+    }
   }
 });
 

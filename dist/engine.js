@@ -41,69 +41,29 @@ export function chooseLane(pcm, sampleRate, occupiedCounts = [0,0,0,0,0,0]) {
   return options.reduce((winner,lane) => scores[lane] - occupiedCounts[lane]*0.09 > scores[winner] - occupiedCounts[winner]*0.09 ? lane : winner, options[0]);
 }
 
-function cleanPCM(input) {
-  const output = new Float32Array(input.length);
-  let mean = 0, peak = 0;
-  for (const value of input) mean += value;
-  mean /= Math.max(1, input.length);
-  for (let i = 0; i < input.length; i++) { output[i] = input[i] - mean; peak = Math.max(peak, Math.abs(output[i])); }
-  const multiplier = 0.84 / Math.max(peak, 0.001);
-  const fade = Math.min(120, Math.floor(input.length / 6));
-  for (let i = 0; i < output.length; i++) {
-    const edge = Math.min(1, i / Math.max(1,fade), (output.length - 1 - i) / Math.max(1,fade));
-    output[i] *= multiplier * edge;
+// Keep complete recordings apart on the two-bar circle, including its seam.
+// Trying every anchor keeps the largest deterministic subset of preset onsets.
+export function fitPatternSteps(patternSteps, duration, swing = 0) {
+  const steps = [...new Set(patternSteps)].sort((a,b) => a-b);
+  const gap = Math.max(0, duration) + 0.003;
+  if (!steps.length || gap > 4) return [];
+  const onset = step => step * 0.125 + (step % 2 ? swing * 0.125 : 0);
+  let best = [];
+  for (let anchorIndex = 0; anchorIndex < steps.length; anchorIndex++) {
+    const anchor = steps[anchorIndex];
+    const selected = [anchor];
+    let previous = 0;
+    for (let offset = 1; offset < steps.length; offset++) {
+      const step = steps[(anchorIndex + offset) % steps.length];
+      const elapsed = (onset(step) - onset(anchor) + 4) % 4;
+      if (elapsed - previous >= gap - 1e-9 && 4 - elapsed >= gap - 1e-9) {
+        selected.push(step);
+        previous = elapsed;
+      }
+    }
+    if (selected.length > best.length) best = selected;
   }
-  return output;
-}
-
-function prepareTexture(pcm, sampleRate, lane) {
-  let onset=0;
-  while(onset<pcm.length-1 && Math.abs(pcm[onset])<0.055)onset++;
-  const start=Math.max(0,onset-Math.round(sampleRate*0.002));
-  const texture=pcm.slice(start);
-  if(lane!==3 && lane!==4)return texture;
-  // Drive and differentiate the actual recording before normalizing its high
-  // frequencies. Even a low-pitched first sound can become an audible hat.
-  let low=0,peak=0;
-  const alpha=1-Math.exp(-2*Math.PI*2100/sampleRate);
-  for(let i=0;i<texture.length;i++) {
-    const driven=Math.tanh(texture[i]*9);
-    low+=alpha*(driven-low);
-    texture[i]=driven-low;
-    peak=Math.max(peak,Math.abs(texture[i]));
-  }
-  const scale=0.8/Math.max(peak,0.0001);
-  for(let i=0;i<texture.length;i++)texture[i]*=scale;
-  return texture;
-}
-
-// A loopable waveform is cut from the recorded transient. This is a sample
-// instrument: no oscillator or prerecorded drums are used for its low end.
-function makeGrain(pcm, sampleRate) {
-  const length = Math.round(sampleRate / 55);
-  let best = Math.min(Math.round(sampleRate*0.035), Math.max(0,pcm.length-length)), bestEnergy = -1;
-  for (let start = Math.round(sampleRate*0.015); start + length < pcm.length; start += Math.max(1,Math.floor(length/4))) {
-    let energy = 0;
-    for (let i=0; i<length; i++) energy += pcm[start+i]*pcm[start+i];
-    if (energy > bestEnergy) { bestEnergy=energy; best=start; }
-  }
-  const grain = new Float32Array(length);
-  for (let i=0; i<length; i++) grain[i]=pcm[Math.min(pcm.length-1,best+i)] || 0;
-  const crossfade = Math.floor(length*0.14);
-  for (let i=0; i<crossfade; i++) {
-    const t=i/crossfade;
-    const a=grain[i], b=grain[length-crossfade+i];
-    const mixed=a*t+b*(1-t);
-    grain[i]=mixed;
-    grain[length-crossfade+i]=mixed;
-  }
-  let smooth=0;
-  const alpha=1-Math.exp(-2*Math.PI*220/sampleRate);
-  for(let cycle=0;cycle<4;cycle++)for(let i=0;i<length;i++){smooth+=alpha*(grain[i]-smooth);if(cycle===3)grain[i]=smooth;}
-  let mean=0; for(const value of grain)mean+=value; mean/=length;
-  let max=0.0001; for(let i=0;i<length;i++){grain[i]-=mean;max=Math.max(max,Math.abs(grain[i]));}
-  for(let i=0;i<length;i++)grain[i]=grain[i]/max*0.85;
-  return grain;
+  return best.sort((a,b) => a-b);
 }
 
 export class BeatEngine {
@@ -112,6 +72,8 @@ export class BeatEngine {
     this.bpm = 120;
     this.state = 'idle';
     this.samples = Array.from({length:6},()=>[]);
+    this.laneStepPools = Array(6).fill(null);
+    this.laneBusyUntil = Array(6).fill(0);
     this.preset = GROOVE_PRESETS[Math.floor(Math.random()*GROOVE_PRESETS.length)];
     this.context = null;
     this.stream = null;
@@ -189,12 +151,10 @@ export class BeatEngine {
       };
       this.captureNode.port.postMessage({type:'reset',generation:this.generation});
       this.master = context.createGain();
-      this.master.gain.value = 0.7;
-      const compressor = context.createDynamicsCompressor();
-      compressor.threshold.value=-14; compressor.knee.value=8; compressor.ratio.value=8;
-      compressor.attack.value=0.003; compressor.release.value=0.14;
-      this.master.connect(compressor); compressor.connect(context.destination);
-      this.compressor=compressor;
+      // Six unchanged recordings can coincide. Fixed attenuation leaves headroom
+      // without compressing, normalizing or reshaping their recorded dynamics.
+      this.master.gain.value = 0.14;
+      this.master.connect(context.destination);
       context.onstatechange=()=>{
         if(this._destroyed || context !== this.context) return;
         if(context.state==='suspended' || context.state==='interrupted') {
@@ -225,7 +185,7 @@ export class BeatEngine {
     this.context=null;this.stream=null;
     if(context)context.onstatechange=null;
     if(this.captureNode)this.captureNode.port.onmessage=null;
-    for(const name of ['input','analyser','captureNode','master','compressor']) {try{this[name]?.disconnect();}catch(_){}this[name]=null;}
+    for(const name of ['input','analyser','captureNode','master']) {try{this[name]?.disconnect();}catch(_){}this[name]=null;}
     stream?.getTracks().forEach(track=>track.stop());
     if(context && context.state!=='closed')context.close().catch(()=>{});
   }
@@ -241,26 +201,40 @@ export class BeatEngine {
   }
   _stopTransport() {
     clearInterval(this.tick);this.tick=null;
+    this.laneBusyUntil.fill(0);
     for(const timer of this.hitTimers)clearTimeout(timer);this.hitTimers.clear();
     for(const source of this.sources){try{source.stop();}catch(_){}try{source.disconnect();}catch(_){}}this.sources.clear();
   }
   _acceptSample(data) {
-    const pcm=cleanPCM(data.pcm);
+    // The browser's captured PCM is the playback material, unchanged. Analysis
+    // decides a rhythmic role only; it never writes into the recording.
+    const pcm=data.pcm;
     const lane=chooseLane(pcm,data.sampleRate,this.samples.map(samples=>samples.length));
-    const texture=prepareTexture(pcm,data.sampleRate,lane);
-    const sample={id:++this.serial,lane,peaks:waveformPeaks(pcm),steps:[],duration:pcm.length/data.sampleRate,strength:Math.min(1,data.peak*2.5),createdAt:performance.now(),activeAt:this.origin+Math.ceil((this.context.currentTime+0.66-this.origin)/0.125)*0.125,buffer:this.context.createBuffer(1,texture.length,data.sampleRate)};
-    sample.buffer.copyToChannel(texture,0);
-    if(lane===0 || lane===2) {const grain=makeGrain(pcm,data.sampleRate);sample.grain=this.context.createBuffer(1,grain.length,data.sampleRate);sample.grain.copyToChannel(grain,0);}
+    const origin=Number.isFinite(this.origin) ? this.origin : this.context.currentTime;
+    const sample={id:++this.serial,lane,peaks:waveformPeaks(pcm),steps:[],duration:pcm.length/data.sampleRate,strength:Math.min(1,data.peak*2.5),createdAt:performance.now(),activeAt:origin+Math.ceil((this.context.currentTime+0.66-origin)/0.125)*0.125,buffer:this.context.createBuffer(1,pcm.length,data.sampleRate)};
+    sample.buffer.copyToChannel(pcm,0);
     const samples=this.samples[lane];
-    if(samples.length>=Math.min(3,this.preset.lanes[lane].length)) sample.evictedId=samples.shift().id;
+    const evicted=[];
     samples.push(sample);
-    this._assignSteps(lane);
+    while(samples.length>3)evicted.push(samples.shift().id);
+    evicted.push(...this._assignSteps(lane));
+    if(evicted.length){sample.evictedId=evicted[0];sample.evictedIds=evicted;}
     this.callbacks.onCapture?.(sample);
   }
   _assignSteps(lane) {
     const samples=this.samples[lane];
+    if(!samples.length)return [];
+    const longest=Math.max(...samples.map(sample=>sample.duration));
+    // A lane may thin as longer sounds arrive, but only removes old onsets.
+    // This also keeps tails already scheduled on the previous plan safe.
+    const pool=this.laneStepPools[lane] || this.preset.lanes[lane];
+    const steps=fitPatternSteps(pool,longest,this.preset.swing);
+    this.laneStepPools[lane]=steps;
+    const evicted=[];
+    while(samples.length>steps.length)evicted.push(samples.shift().id);
     for(const sample of samples)sample.steps=[];
-    this.preset.lanes[lane].forEach((step,index)=>{if(samples.length)samples[index%samples.length].steps.push(step);});
+    steps.forEach((step,index)=>samples[index%samples.length].steps.push(step));
+    return evicted;
   }
   _schedule() {
     if(this.state!=='running' || !this.context)return;
@@ -274,8 +248,7 @@ export class BeatEngine {
       for(let lane=0;lane<6;lane++) {
         const sample=this.samples[lane].find(sample=>sample.steps.includes(step));
         if(sample && time>=sample.activeAt && time>=now-0.008) {
-          const velocity=lane===3 ? (step%4===0 ? 0.78 : step%2 ? 0.42 : 0.59) : lane===5 ? 0.57 : 0.9;
-          this._play(sample,Math.max(now,time),velocity,step,loop);
+          this._play(sample,Math.max(now,time),1,step,loop);
         }
       }
       this.absoluteStep++;
@@ -287,47 +260,33 @@ export class BeatEngine {
   }
   _play(sample,time,velocity,step,loop) {
     const context=this.context,lane=sample.lane;
+    // Defensive only: the visible lane plan already spaces complete recordings.
+    if(time < this.laneBusyUntil[lane] - 1e-6)return false;
     const source=context.createBufferSource();
     const gain=context.createGain();
-    const filter=context.createBiquadFilter();
-    let length,volume;
-    if(lane===0 || lane===2) {
-      source.buffer=sample.grain;source.loop=true;filter.type='lowpass';filter.Q.value=0.7;
-      if(lane===0) {
-        length=0.27;volume=0.81;filter.frequency.value=185;
-        source.playbackRate.setValueAtTime(2.4,time);source.playbackRate.exponentialRampToValueAtTime(0.78,time+0.13);
-      } else {
-        length=this.preset.family==='trap' ? 0.52 : 0.33;volume=0.48;filter.frequency.value=230;
-        const note=[0,0,-5,3][Math.floor(step/8)%4];
-        const octave=loop%4===3 && step>=24 ? 1 : 0;
-        source.playbackRate.value=2**((note+octave*12)/12);
-      }
-    } else {
-      source.buffer=sample.buffer;
-      const settings={1:[0.18,0.67,800,0.93,'highpass'],3:[0.058,0.46,3100,1.85,'highpass'],4:[0.23,0.38,2400,1.45,'highpass'],5:[0.115,0.46,1200,1.18,'bandpass']}[lane];
-      [length,volume,filter.frequency.value,source.playbackRate.value,filter.type]=settings;
-      filter.Q.value=lane===5 ? 0.65 : 0.6;
-      length=Math.min(length,source.buffer.duration/source.playbackRate.value);
-    }
+    const length=sample.buffer.duration;
+    const edge=Math.min(0.003,length/2);
+    source.buffer=sample.buffer;
+    source.playbackRate.value=1;
+    source.detune.value=0;
+    source.loop=false;
+    // Only the first/last 3 ms are softened to avoid boundary clicks. The entire
+    // body plays at its recorded speed, pitch and relative level in every role.
     gain.gain.setValueAtTime(0,time);
-    gain.gain.linearRampToValueAtTime(volume*velocity,time+0.003);
-    gain.gain.exponentialRampToValueAtTime(0.0001,time+Math.max(0.009,length));
-    source.connect(filter);filter.connect(gain);gain.connect(this.master);
+    gain.gain.linearRampToValueAtTime(1,time+edge);
+    gain.gain.setValueAtTime(1,time+length-edge);
+    gain.gain.linearRampToValueAtTime(0,time+length);
+    source.connect(gain);gain.connect(this.master);
     this._trackSource(source);
-    source.addEventListener('ended',()=>{filter.disconnect();gain.disconnect();},{once:true});
-    source.start(time);source.stop(time+length+0.025);
-    // The actual recorded attack keeps the kick connected to the source sound.
-    if(lane===0) {
-      const attack=context.createBufferSource();attack.buffer=sample.buffer;
-      const attackGain=context.createGain();attackGain.gain.setValueAtTime(velocity*0.12,time);attackGain.gain.exponentialRampToValueAtTime(0.0001,time+0.035);
-      attack.connect(attackGain);attackGain.connect(this.master);this._trackSource(attack);
-      attack.addEventListener('ended',()=>attackGain.disconnect(),{once:true});attack.start(time);attack.stop(time+0.04);
-    }
+    source.addEventListener('ended',()=>gain.disconnect(),{once:true});
+    source.start(time);source.stop(time+length);
+    this.laneBusyUntil[lane]=time+length;
     this.captureNode?.port.postMessage({type:'playback',time,generation:this.generation});
     const generation=this.generation;
     const delayMs=Math.max(0,(time-context.currentTime+(context.outputLatency || context.baseLatency || 0))*1000);
-    const timer=setTimeout(()=>{this.hitTimers.delete(timer);if(generation===this.generation && this.state==='running')this.callbacks.onHit?.({lane,sampleId:sample.id,step,time,delayMs:0,velocity});},delayMs);
+    const timer=setTimeout(()=>{this.hitTimers.delete(timer);if(generation===this.generation && this.state==='running')this.callbacks.onHit?.({lane,sampleId:sample.id,step,time,delayMs:0,velocity:1,duration:length});},delayMs);
     this.hitTimers.add(timer);
+    return true;
   }
   getPosition() {
     if(!this.context || !Number.isFinite(this.origin) || this.state!=='running')return 0;
@@ -348,6 +307,7 @@ export class BeatEngine {
     this.generation++;
     this._stopTransport();
     this.samples=Array.from({length:6},()=>[]);
+    this.laneStepPools=Array(6).fill(null);
     this.preset=GROOVE_PRESETS[Math.floor(Math.random()*GROOVE_PRESETS.length)];
     this.captureNode?.port.postMessage({type:'reset',generation:this.generation});
     this.callbacks.onLevels?.({rms:0,peak:0,db:-120,threshold:-34,capturing:false,generation:this.generation});
@@ -361,7 +321,7 @@ export class BeatEngine {
     this._stopTransport();
     document.removeEventListener('visibilitychange',this._onVisibility);
     this.stream?.getTracks().forEach(track=>track.stop());this.stream=null;
-    this.input?.disconnect();this.analyser?.disconnect();this.captureNode?.disconnect();this.master?.disconnect();this.compressor?.disconnect();
+    this.input?.disconnect();this.analyser?.disconnect();this.captureNode?.disconnect();this.master?.disconnect();
     if(this.captureNode)this.captureNode.port.onmessage=null;
     if(this.context){this.context.onstatechange=null;try{await this.context.close();}catch(_){}this.context=null;}
     this.samples=Array.from({length:6},()=>[]);
