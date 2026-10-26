@@ -1,11 +1,7 @@
-export const GROOVE_PRESETS = [
-  {name:'boom-bap-1', family:'boom-bap', swing:0.13, lanes:[[0,7,10,16,22,27],[4,12,20,28],[0,10,16,26],[0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30],[14,30],[6,15,23,31]]},
-  {name:'boom-bap-2', family:'boom-bap', swing:0.17, lanes:[[0,6,11,16,19,26],[4,12,20,28],[0,11,16,26],[0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30],[10,30],[9,14,25,31]]},
-  {name:'boom-bap-3', family:'boom-bap', swing:0.1, lanes:[[0,3,10,16,23,26],[4,12,20,28],[0,10,16,23],[0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30],[6,22,30],[7,15,24,31]]},
-  {name:'trap-1', family:'trap', swing:0, lanes:[[0,6,10,16,23,27],[8,24],[0,10,16,27],[0,2,4,6,8,10,12,14,15,16,18,20,22,24,26,28,29,30,31],[7,23],[11,19,30]]},
-  {name:'trap-2', family:'trap', swing:0, lanes:[[0,3,14,16,21,26],[8,24],[0,14,16,26],[0,2,4,6,7,8,10,12,14,16,18,20,22,23,24,26,28,30,31],[12,28],[5,15,22,31]]},
-  {name:'trap-3', family:'trap', swing:0.035, lanes:[[0,5,11,16,22,29],[8,24],[0,11,16,29],[0,2,4,5,6,8,10,12,14,16,18,20,21,22,24,26,28,30,31],[6,22,30],[3,13,19,27]]}
-];
+import { DEFAULT_BPM, FIRST_PULSE_STEPS, PLACEMENT_SECONDS, STARTER_GROOVE } from './patterns.js';
+import { classifySample } from './analysis.js';
+import { MelodyEngine } from './melody.js';
+export { GROOVE_PRESETS } from './patterns.js';
 
 export function waveformPeaks(pcm, count = 48) {
   const peaks = [];
@@ -20,34 +16,19 @@ export function waveformPeaks(pcm, count = 48) {
   return peaks.map(value => value / largest);
 }
 
-export function chooseLane(pcm, sampleRate, occupiedCounts = [0,0,0,0,0,0]) {
-  let energy = 0, lowEnergy = 0, differences = 0, low = 0, crossings = 0, tail = 0;
-  const alpha = 1 - Math.exp(-2 * Math.PI * 240 / sampleRate);
-  for (let i = 0; i < pcm.length; i++) {
-    const value = pcm[i];
-    energy += value * value;
-    low += alpha * (value - low);
-    lowEnergy += low * low;
-    if (i) { differences += (value - pcm[i-1]) ** 2; if (value * pcm[i-1] < 0) crossings++; }
-    if (i > pcm.length * 0.6) tail += value * value;
-  }
-  const bass = Math.min(1, lowEnergy / Math.max(energy, 1e-12));
-  const bright = Math.min(1, differences / Math.max(energy, 1e-12) / 1.8);
-  const noisy = Math.min(1, crossings / Math.max(1, pcm.length) * 4);
-  const sustain = Math.min(1, tail / Math.max(energy, 1e-12) * 3);
-  const scores = [bass * 2 + (1-sustain)*0.3, noisy*0.65 + (1-bright)*0.35, bass*1.4+sustain*0.45, bright*1.3+noisy*0.4+(1-sustain)*0.25, bright+noisy*0.4+sustain*0.4, 0.55+(1-bass)*(1-bright)*0.35];
-  const vacant = occupiedCounts.map((count,lane) => count === 0 ? lane : -1).filter(lane => lane >= 0);
-  const options = vacant.length ? vacant : [0,1,2,3,4,5];
-  return options.reduce((winner,lane) => scores[lane] - occupiedCounts[lane]*0.09 > scores[winner] - occupiedCounts[winner]*0.09 ? lane : winner, options[0]);
+export function chooseLane(pcm, sampleRate, occupiedCounts = [0,0,0,0,0,0], excludedLanes = []) {
+  return classifySample(pcm, sampleRate, occupiedCounts, excludedLanes).lane;
 }
 
 // Keep complete recordings apart on the two-bar circle, including its seam.
 // Trying every anchor keeps the largest deterministic subset of preset onsets.
-export function fitPatternSteps(patternSteps, duration, swing = 0) {
+export function fitPatternSteps(patternSteps, duration, swing = 0, bpm = DEFAULT_BPM) {
   const steps = [...new Set(patternSteps)].sort((a,b) => a-b);
   const gap = Math.max(0, duration) + 0.003;
-  if (!steps.length || gap > 4) return [];
-  const onset = step => step * 0.125 + (step % 2 ? swing * 0.125 : 0);
+  const stepSeconds = 60 / bpm / 4;
+  const loopSeconds = stepSeconds * 32;
+  if (!steps.length || gap > loopSeconds) return [];
+  const onset = step => step * stepSeconds + (step % 2 ? swing * stepSeconds : 0);
   let best = [];
   for (let anchorIndex = 0; anchorIndex < steps.length; anchorIndex++) {
     const anchor = steps[anchorIndex];
@@ -55,8 +36,8 @@ export function fitPatternSteps(patternSteps, duration, swing = 0) {
     let previous = 0;
     for (let offset = 1; offset < steps.length; offset++) {
       const step = steps[(anchorIndex + offset) % steps.length];
-      const elapsed = (onset(step) - onset(anchor) + 4) % 4;
-      if (elapsed - previous >= gap - 1e-9 && 4 - elapsed >= gap - 1e-9) {
+      const elapsed = (onset(step) - onset(anchor) + loopSeconds) % loopSeconds;
+      if (elapsed - previous >= gap - 1e-9 && loopSeconds - elapsed >= gap - 1e-9) {
         selected.push(step);
         previous = elapsed;
       }
@@ -69,12 +50,14 @@ export function fitPatternSteps(patternSteps, duration, swing = 0) {
 export class BeatEngine {
   constructor(callbacks = {}) {
     this.callbacks = callbacks;
-    this.bpm = 120;
+    this.bpm = DEFAULT_BPM;
     this.state = 'idle';
     this.samples = Array.from({length:6},()=>[]);
+    this.anchorLane = null;
+    this.anchorSampleId = null;
     this.laneStepPools = Array(6).fill(null);
     this.laneBusyUntil = Array(6).fill(0);
-    this.preset = GROOVE_PRESETS[Math.floor(Math.random()*GROOVE_PRESETS.length)];
+    this.preset = STARTER_GROOVE;
     this.context = null;
     this.stream = null;
     this.generation = 0;
@@ -84,14 +67,28 @@ export class BeatEngine {
     this.tick = null;
     this._starting = null;
     this._destroyed = false;
+    this._graphReady = false;
+    this._audioReady = false;
+    this._recovery = null;
+    this._needsRebuild = false;
+    this.melody = null;
+    this._melodyReady = false;
+    this._melodyStarted = false;
+    this._melodySeed = undefined;
     this._onVisibility = () => {
       if (!this.context || this._destroyed) return;
       if(document.hidden) {
+        // The OS permission sheet can transiently hide the page. Suspending
+        // before the capture graph exists can strand the initial unlock.
+        if (!this._graphReady) return;
         this._stopTransport();
+        this._cancelRecovery();
+        this._audioReady = false;
         this.context.suspend().catch(()=>{});
         if(this.state === 'running') this._setState('suspended');
       } else if(this.stream && this.stream.getAudioTracks().some(track=>track.readyState==='live')) {
-        this.context.resume().then(()=>this._resumeTransport()).catch(()=>this._setState('suspended'));
+        this._requestResume(this.context);
+        if (this._graphReady) this._recoverContext(this.context);
       }
     };
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange',this._onVisibility);
@@ -100,42 +97,150 @@ export class BeatEngine {
     this.state = state;
     this.callbacks.onState?.(state,error);
   }
-  start() {
-    if(this._destroyed) return Promise.reject(new Error('This audio session has ended.'));
-    if(this._starting) return this._starting;
-    if(this.context && this.stream && this.stream.getAudioTracks().some(track=>track.readyState==='live')) {
-      // Called directly inside a touch gesture so Safari can unlock audio.
-      const resume=this.context.resume();
-      return resume.then(()=>{this._resumeTransport();return this;});
+  _hasLiveMicrophone() {
+    return !!this.stream?.getAudioTracks().some(track => track.readyState === 'live');
+  }
+  _requestResume(context, gesture = false) {
+    if (!context || context !== this.context || context.state === 'closed') return;
+    // Never await this promise: WebKit can leave it pending across the first
+    // microphone permission sheet. Each new gesture must be able to try again.
+    try { Promise.resolve(context.resume()).catch(() => {}); } catch (_) {}
+    if (gesture && typeof context.createBufferSource === 'function' && typeof context.createBuffer === 'function') {
+      try {
+        const unlock = context.createBufferSource();
+        unlock.buffer = context.createBuffer(1, 1, context.sampleRate || 44100);
+        unlock.connect(context.destination);
+        unlock.onended = () => { try { unlock.disconnect(); } catch (_) {} };
+        unlock.start(); // One zero-valued frame opens the output route silently.
+      } catch (_) {}
     }
-    if(!globalThis.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+  }
+  _createContext(AudioContextClass) {
+    const context = new AudioContextClass({latencyHint:'interactive'});
+    this.context = context;
+    this._graphReady = false;
+    this._audioReady = false;
+    this._needsRebuild = false;
+    // Install this before the permission prompt can interrupt the audio route.
+    context.onstatechange = () => {
+      if (this._destroyed || context !== this.context) return;
+      if (context.state === 'suspended' || context.state === 'interrupted') {
+        this._audioReady = false;
+        this._stopTransport();
+        if (this._graphReady) {
+          this._setState('suspended');
+          if (!document.hidden) this._recoverContext(context);
+        }
+      } else if (context.state === 'running' && this._graphReady && !document.hidden) {
+        this._recoverContext(context);
+      } else if (context.state === 'closed' && this._graphReady) {
+        this._stopTransport();
+        this._cancelRecovery();
+        this._audioReady = false;
+        this._needsRebuild = true;
+        this._setState('suspended');
+      }
+    };
+    this._requestResume(context, true);
+    return context;
+  }
+  start() {
+    if (this._destroyed) return Promise.reject(new Error('This audio session has ended.'));
+    // A second touch is useful even while permission/worklet setup is pending.
+    // It must not get trapped behind the first unresolved resume promise.
+    if (this.context) this._requestResume(this.context, true);
+    if (this._starting) return this._starting;
+    if (this.context && this._hasLiveMicrophone() && this._graphReady) {
+      if (this.state === 'running' && this.context.state === 'running' && this._audioReady) return Promise.resolve(this);
+      if (!this._needsRebuild && this.context.state !== 'closed') return this._recoverContext(this.context);
+      // A failed bounded recovery may mean iOS left this particular context
+      // unusable. A fresh gesture can rebuild it without a new permission prompt.
+      const media = this._releaseSession(true);
+      const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
+      this._setState('requesting');
+      const context = this._createContext(AudioContextClass);
+      return this._launchInitialization(context, media);
+    }
+    if (!globalThis.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       const error = new Error('Microphone capture requires HTTPS and a browser with microphone support.');
       this._setState('error',error); return Promise.reject(error);
     }
     const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
-    if(!AudioContextClass) { const error=new Error('Web Audio is unavailable.');this._setState('error',error);return Promise.reject(error); }
-    // Retrying after a disconnected device must not retain the old graph.
+    if (!AudioContextClass) { const error=new Error('Web Audio is unavailable.');this._setState('error',error);return Promise.reject(error); }
     this._releaseSession();
     this._setState('requesting');
-    // Do not await permission before creating/resuming the context: iOS requires
-    // this call while the initial touch still has user activation.
-    this.context = new AudioContextClass({latencyHint:'interactive'});
-    const context = this.context;
-    const resume = context.resume();
-    resume.catch(()=>{});
-    this._starting = this._initialize(context,resume).finally(()=>{this._starting=null;});
-    return this._starting;
+    const context = this._createContext(AudioContextClass);
+    return this._launchInitialization(context);
   }
-  async _initialize(context, firstResume) {
+  _launchInitialization(context, media = null) {
+    const pending = this._initialize(context, media).finally(() => {
+      if (this._starting === pending) this._starting = null;
+    });
+    this._starting = pending;
+    return pending;
+  }
+  _cancelRecovery() {
+    const recovery = this._recovery;
+    if (!recovery) return;
+    clearTimeout(recovery.timer);
+    this._recovery = null;
+    recovery.resolve(this);
+  }
+  _recoverContext(context) {
+    if (this._destroyed || context !== this.context || !this._graphReady) return Promise.resolve(this);
+    if (this._audioReady && context.state === 'running' && !document.hidden) {
+      this._needsRebuild = false;
+      this._resumeTransport();
+      this._cancelRecovery();
+      return Promise.resolve(this);
+    }
+    if (this._recovery?.context === context) return this._recovery.promise;
+    this._cancelRecovery();
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    const recovery = {context, promise, resolve, timer:null, began:performance.now(), clock:context.currentTime, attempt:0};
+    this._recovery = recovery;
+    const check = () => {
+      if (this._recovery !== recovery) return;
+      if (this._destroyed || context !== this.context || document.hidden) { this._cancelRecovery(); return; }
+      // State alone can say running while the iOS audio hardware is stalled.
+      // Either advancing audio time or a worklet heartbeat confirms it is live.
+      if (context.state === 'running' && (this._audioReady || context.currentTime > recovery.clock + 0.005)) {
+        this._audioReady = true;
+        this._needsRebuild = false;
+        this._resumeTransport();
+        this._cancelRecovery();
+        return;
+      }
+      const elapsed = performance.now() - recovery.began;
+      if (elapsed >= 1200) {
+        this._needsRebuild = true;
+        this._setState('suspended');
+        this._cancelRecovery();
+        return;
+      }
+      if ([0, 2, 5, 9].includes(recovery.attempt)) this._requestResume(context);
+      recovery.attempt++;
+      recovery.timer = setTimeout(check, 100);
+    };
+    check();
+    return promise;
+  }
+  async _initialize(context, retainedMedia = null) {
+    let media = retainedMedia;
     try {
-      const media = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:false,autoGainControl:false},video:false});
-      if(this._destroyed || context !== this.context) {media.getTracks().forEach(track=>track.stop());return this;}
+      // Load the small processor while the user is answering the permission
+      // prompt instead of adding another network wait after approval.
+      const moduleReady = context.audioWorklet
+        ? context.audioWorklet.addModule(new URL('./capture-worklet.js',import.meta.url))
+        : Promise.reject(new Error('This browser does not support live audio processing.'));
+      moduleReady.catch(() => {});
+      if (!media) media = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:false,autoGainControl:false},video:false});
+      if (this._destroyed || context !== this.context) { if(media !== this.stream) media.getTracks().forEach(track=>track.stop()); return this; }
       this.stream = media;
-      await firstResume.catch(()=>{});
-      await context.resume();
-      if(!context.audioWorklet) throw new Error('This browser does not support live audio processing.');
-      await context.audioWorklet.addModule(new URL('./capture-worklet.js',import.meta.url));
-      if(this._destroyed || context !== this.context) {media.getTracks().forEach(track=>track.stop());return this;}
+      this._requestResume(context);
+      await moduleReady;
+      if (this._destroyed || context !== this.context) { if(media !== this.stream) media.getTracks().forEach(track=>track.stop()); return this; }
       this.input = context.createMediaStreamSource(media);
       this.analyser = context.createAnalyser();
       this.analyser.fftSize = 2048;
@@ -145,52 +250,64 @@ export class BeatEngine {
       this.input.connect(this.captureNode);
       this.captureNode.connect(context.destination); // Processor outputs silence.
       this.captureNode.port.onmessage = ({data}) => {
-        if(this._destroyed || data.generation !== this.generation || this.state !== 'running') return;
-        if(data.type === 'level') this.callbacks.onLevels?.(data);
-        if(data.type === 'capture') this._acceptSample(data);
+        if(this._destroyed || context !== this.context || data.generation !== this.generation) return;
+        if(data.type === 'level') {
+          this._audioReady = true;
+          if (context.state === 'running' && !document.hidden) this._recoverContext(context);
+          if (this.state === 'running') this.callbacks.onLevels?.(data);
+        }
+        if(data.type === 'capture' && this.state === 'running') this._acceptSample(data);
       };
       this.captureNode.port.postMessage({type:'reset',generation:this.generation});
       this.master = context.createGain();
-      // Six unchanged recordings can coincide. Fixed attenuation leaves headroom
-      // without compressing, normalizing or reshaping their recorded dynamics.
-      this.master.gain.value = 0.14;
+      // Up to four full anchor tails and five other lanes can coincide. Fixed
+      // attenuation leaves headroom without reshaping their recorded dynamics.
+      this.master.gain.value = 0.085;
       this.master.connect(context.destination);
-      context.onstatechange=()=>{
-        if(this._destroyed || context !== this.context) return;
-        if(context.state==='suspended' || context.state==='interrupted') {
-          this._stopTransport();
-          if(this.state==='running')this._setState('suspended');
-        } else if(context.state==='running' && this.state==='suspended' && !document.hidden) this._resumeTransport();
-      };
+      this._graphReady = true;
+      // Keyboard assets prepare independently: permission and raw capture never
+      // wait for a download or decode. The six-role gate runs on this same clock.
+      this._prepareMelody(context);
+      // AudioBuffer data survives a context replacement, but its old context's
+      // timestamps do not. Existing recordings are ready on the new clock.
+      for (const bank of this.samples) for (const sample of bank) sample.activeAt = 0;
       for(const track of media.getAudioTracks()) {
-        track.addEventListener('ended',()=>{if(!this._destroyed && context===this.context && media===this.stream){this._stopTransport();this._setState('error',new Error('Microphone access ended.'));}});
-        track.addEventListener('mute',()=>{if(!this._destroyed && context===this.context && media===this.stream && this.state==='running'){this._stopTransport();this._setState('suspended');}});
-        track.addEventListener('unmute',()=>{if(!this._destroyed && context===this.context && media===this.stream && !document.hidden && context.state==='running')this._resumeTransport();});
+        track.addEventListener('ended',()=>{if(!this._destroyed && context===this.context && media===this.stream){this._stopTransport();this._cancelRecovery();this._setState('error',new Error('Microphone access ended.'));}});
+        track.addEventListener('mute',()=>{if(!this._destroyed && context===this.context && media===this.stream && this.state==='running'){this._stopTransport();this._audioReady=false;this._setState('suspended');}});
+        track.addEventListener('unmute',()=>{if(!this._destroyed && context===this.context && media===this.stream && !document.hidden){this._requestResume(context);this._recoverContext(context);}});
       }
-      this._resumeTransport(true);
+      this._requestResume(context);
+      await this._recoverContext(context);
       return this;
     } catch(error) {
-      this._stopTransport();
-      this.stream?.getTracks().forEach(track=>track.stop());
-      this.stream=null;
-      try {await context.close();} catch(_) {}
-      if(this.context===context)this.context=null;
-      if(!this._destroyed)this._setState(error.name==='NotAllowedError' || error.name==='PermissionDeniedError' ? 'denied' : 'error',error);
+      if (context !== this.context || this._destroyed) {
+        if (media && media !== this.stream) media.getTracks().forEach(track=>track.stop());
+        return this;
+      }
+      this._releaseSession();
+      this._setState(error.name==='NotAllowedError' || error.name==='PermissionDeniedError' ? 'denied' : 'error',error);
       throw error;
     }
   }
-  _releaseSession() {
+  _releaseSession(keepMicrophone = false) {
+    this._cancelRecovery();
     this._stopTransport();
+    this.melody?.destroy();
+    this.melody = null;
+    this._melodyReady = false;
     const context=this.context,stream=this.stream;
-    this.context=null;this.stream=null;
+    this.context=null;
+    if (!keepMicrophone) this.stream=null;
+    this._graphReady=false;this._audioReady=false;this._needsRebuild=false;
     if(context)context.onstatechange=null;
     if(this.captureNode)this.captureNode.port.onmessage=null;
     for(const name of ['input','analyser','captureNode','master']) {try{this[name]?.disconnect();}catch(_){}this[name]=null;}
-    stream?.getTracks().forEach(track=>track.stop());
-    if(context && context.state!=='closed')context.close().catch(()=>{});
+    if (!keepMicrophone) stream?.getTracks().forEach(track=>track.stop());
+    if(context && context.state!=='closed') {try { Promise.resolve(context.close()).catch(()=>{}); } catch (_) {}}
+    return keepMicrophone ? stream : null;
   }
   _resumeTransport(fromStart=false) {
-    if(!this.context || this.context.state!=='running' || !this.master || this._destroyed) {if(!this._destroyed)this._setState('suspended');return;}
+    if(!this.context || this.context.state!=='running' || !this.master || !this._audioReady || this._destroyed) {return;}
     if(this.tick) {if(this.state!=='running')this._setState('running');return;}
     this.origin=this.context.currentTime+0.12;
     this.nextStep=0;
@@ -201,17 +318,81 @@ export class BeatEngine {
   }
   _stopTransport() {
     clearInterval(this.tick);this.tick=null;
+    this.melody?.stop();
+    this._melodyStarted = false;
     this.laneBusyUntil.fill(0);
     for(const timer of this.hitTimers)clearTimeout(timer);this.hitTimers.clear();
     for(const source of this.sources){try{source.stop();}catch(_){}try{source.disconnect();}catch(_){}}this.sources.clear();
+  }
+  _prepareMelody(context) {
+    let melody;
+    const current = () => !this._destroyed && context === this.context && this.melody === melody;
+    melody = new MelodyEngine(context, {
+      onState: status => {
+        if (current()) this.callbacks.onMelodyState?.(typeof status === 'string' ? {state:status} : status);
+      },
+      onNote: note => {
+        if (!current() || this.state !== 'running') return;
+        const absolute = (note.time - this.origin) / (60 / this.bpm / 4);
+        const step = ((absolute % 32) + 32) % 32;
+        this.callbacks.onMelodyNote?.({...note,step});
+      },
+    });
+    this.melody = melody;
+    this._melodyReady = false;
+    this._melodyStarted = false;
+    if (this._melodySeed === undefined) this._melodySeed = melody.seed;
+    const ready = () => {
+      if (!current()) return;
+      this._melodyReady = true;
+      this._maybeStartMelody();
+    };
+    // prepare() has its own native-key fallback for unavailable sample assets.
+    // Its completion is checked against the instance, including after rebuild.
+    Promise.resolve(melody.prepare()).then(ready, ready);
+  }
+  _melodyRoot() {
+    const bass = this.samples[2].at(-1)?.classification?.features;
+    // A short noisy thud has no dependable pitch. Only align the keyboard to a
+    // sustained, strongly tonal low recording; the recording stays untouched.
+    if (!bass || bass.lowRatio < 0.6 || bass.flatness > 0.02 || bass.spectralEntropy > 0.35 ||
+        bass.activeDuration < 0.4 || bass.sustainRatio < 0.38 || bass.pitchSpreadCents > 40 ||
+        bass.dominantHz < 45 || bass.dominantHz > 250) return undefined;
+    const midi = Math.round(69 + 12*Math.log2(bass.dominantHz/440));
+    return 48 + ((midi % 12) + 12) % 12;
+  }
+  _maybeStartMelody() {
+    if (this.state !== 'running' || !this.context || !this.melody || !this._melodyReady || this._melodyStarted ||
+        !this.samples.every(bank => bank.length > 0) || !Number.isFinite(this.origin)) return false;
+    const barSeconds = 4 * 60 / this.bpm;
+    // The sixth recording must have landed before accompaniment enters. Start
+    // on a full bar boundary even when its placement flight crosses this bar.
+    const latestPlacement = Math.max(...this.samples.flat().map(sample => sample.activeAt || 0));
+    const earliest = Math.max(this.context.currentTime + 0.11, latestPlacement);
+    const startTime = this.origin + Math.max(0,Math.ceil((earliest-this.origin)/barSeconds))*barSeconds;
+    this._melodyStarted = true;
+    this.melody.start(startTime,{bpm:this.bpm,seed:this._melodySeed,rootMidi:this._melodyRoot()});
+    return true;
   }
   _acceptSample(data) {
     // The browser's captured PCM is the playback material, unchanged. Analysis
     // decides a rhythmic role only; it never writes into the recording.
     const pcm=data.pcm;
-    const lane=chooseLane(pcm,data.sampleRate,this.samples.map(samples=>samples.length));
+    const firstCapture = this.anchorSampleId === null;
+    const classification = classifySample(pcm,data.sampleRate,this.samples.map(samples=>samples.length),firstCapture ? [] : [this.anchorLane]);
+    const lane = classification.lane;
+    // A recording must suit its role. Repeating one sound does not force it
+    // into unrelated empty lanes just to complete the instrument.
+    if (lane === null) return null;
+    if (firstCapture) {
+      this.origin = this.context.currentTime + PLACEMENT_SECONDS;
+      this.absoluteStep = 0;
+      this.nextStep = 0;
+    }
     const origin=Number.isFinite(this.origin) ? this.origin : this.context.currentTime;
-    const sample={id:++this.serial,lane,peaks:waveformPeaks(pcm),steps:[],duration:pcm.length/data.sampleRate,strength:Math.min(1,data.peak*2.5),createdAt:performance.now(),activeAt:origin+Math.ceil((this.context.currentTime+0.66-origin)/0.125)*0.125,buffer:this.context.createBuffer(1,pcm.length,data.sampleRate)};
+    const stepSeconds = 60 / this.bpm / 4;
+    const sample={id:++this.serial,lane,isAnchor:firstCapture,role:classification.role,classification,peaks:waveformPeaks(pcm),steps:[],duration:pcm.length/data.sampleRate,strength:Math.min(1,data.peak*2.5),createdAt:performance.now(),placementMs:PLACEMENT_SECONDS*1000,activeAt:firstCapture ? origin : origin+Math.ceil((this.context.currentTime+PLACEMENT_SECONDS-origin)/stepSeconds)*stepSeconds,buffer:this.context.createBuffer(1,pcm.length,data.sampleRate)};
+    if (firstCapture) { this.anchorLane = lane; this.anchorSampleId = sample.id; }
     sample.buffer.copyToChannel(pcm,0);
     const samples=this.samples[lane];
     const evicted=[];
@@ -220,15 +401,25 @@ export class BeatEngine {
     evicted.push(...this._assignSteps(lane));
     if(evicted.length){sample.evictedId=evicted[0];sample.evictedIds=evicted;}
     this.callbacks.onCapture?.(sample);
+    this._maybeStartMelody();
+    return sample;
   }
   _assignSteps(lane) {
     const samples=this.samples[lane];
     if(!samples.length)return [];
+    const anchor = samples.find(sample => sample.isAnchor);
+    if (anchor) {
+      const evicted = samples.filter(sample => sample !== anchor).map(sample => sample.id);
+      samples.splice(0,samples.length,anchor);
+      anchor.steps = [...FIRST_PULSE_STEPS];
+      this.laneStepPools[lane] = [...FIRST_PULSE_STEPS];
+      return evicted;
+    }
     const longest=Math.max(...samples.map(sample=>sample.duration));
     // A lane may thin as longer sounds arrive, but only removes old onsets.
     // This also keeps tails already scheduled on the previous plan safe.
     const pool=this.laneStepPools[lane] || this.preset.lanes[lane];
-    const steps=fitPatternSteps(pool,longest,this.preset.swing);
+    const steps=fitPatternSteps(pool,longest,this.preset.swing,this.bpm);
     this.laneStepPools[lane]=steps;
     const evicted=[];
     while(samples.length>steps.length)evicted.push(samples.shift().id);
@@ -240,6 +431,8 @@ export class BeatEngine {
     if(this.state!=='running' || !this.context)return;
     const duration=60/this.bpm/4;
     const now=this.context.currentTime;
+    this._maybeStartMelody();
+    if (this._melodyStarted) this.melody.schedule(now+0.11);
     if(this.origin+this.absoluteStep*duration < now-0.2) this.absoluteStep=Math.ceil((now-this.origin)/duration);
     while(this.origin+this.absoluteStep*duration < now+0.11) {
       const step=this.absoluteStep%32;
@@ -261,7 +454,7 @@ export class BeatEngine {
   _play(sample,time,velocity,step,loop) {
     const context=this.context,lane=sample.lane;
     // Defensive only: the visible lane plan already spaces complete recordings.
-    if(time < this.laneBusyUntil[lane] - 1e-6)return false;
+    if(!sample.isAnchor && time < this.laneBusyUntil[lane] - 1e-6)return false;
     const source=context.createBufferSource();
     const gain=context.createGain();
     const length=sample.buffer.duration;
@@ -307,8 +500,12 @@ export class BeatEngine {
     this.generation++;
     this._stopTransport();
     this.samples=Array.from({length:6},()=>[]);
+    this.anchorLane=null;
+    this.anchorSampleId=null;
+    this.melody?.reset();
+    this._melodySeed=this.melody?.seed;
     this.laneStepPools=Array(6).fill(null);
-    this.preset=GROOVE_PRESETS[Math.floor(Math.random()*GROOVE_PRESETS.length)];
+    this.preset=STARTER_GROOVE;
     this.captureNode?.port.postMessage({type:'reset',generation:this.generation});
     this.callbacks.onLevels?.({rms:0,peak:0,db:-120,threshold:-34,capturing:false,generation:this.generation});
     if(this.context?.state==='running' && this.stream)this._resumeTransport(true);
@@ -318,12 +515,8 @@ export class BeatEngine {
   async destroy() {
     this._destroyed=true;
     this.generation++;
-    this._stopTransport();
+    this._releaseSession();
     document.removeEventListener('visibilitychange',this._onVisibility);
-    this.stream?.getTracks().forEach(track=>track.stop());this.stream=null;
-    this.input?.disconnect();this.analyser?.disconnect();this.captureNode?.disconnect();this.master?.disconnect();
-    if(this.captureNode)this.captureNode.port.onmessage=null;
-    if(this.context){this.context.onstatechange=null;try{await this.context.close();}catch(_){}this.context=null;}
     this.samples=Array.from({length:6},()=>[]);
     this._setState('idle');
   }

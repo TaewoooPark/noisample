@@ -1,0 +1,44 @@
+LOOPIFY — SAMPLE CREDITS
+Prepared 2026-10-24
+
+GRAND PIANO
+Salamander Grand Piano v3 by Alexander Holm.
+Source: https://github.com/sfzinstruments/SalamanderGrandPiano
+Original recording: https://archive.org/details/SalamanderGrandPianoV3
+Repository version: 3382bf9496bba2486f5ab0de55a264d1dfc38404
+License: Creative Commons Attribution 3.0 Unported (CC BY 3.0)
+https://creativecommons.org/licenses/by/3.0/
+Full legal code: samples/licenses/Salamander-LICENSE.txt
+Repository FLAC conversion and SFZ remapping by kinwie. Only the audio samples
+are used here; no SFZ instrument mapping is used.
+
+FM PIANO / MARIMBA / VIBRAPHONE
+Versilian Community Sample Library (VCSL), Versilian Studios LLC and contributors.
+Source: https://github.com/sgossner/VCSL
+Repository version: c1ea7bcc3c7309650ab0da9d15c9cd1fbc4a4c7e
+License: CC0 1.0 Universal
+https://creativecommons.org/publicdomain/zero/1.0/
+Full legal code: samples/licenses/VCSL-LICENSE.txt
+FM Piano: original user-created TX81Z patches sampled from hardware using Samplit.
+Marimba: medium velocity, Outrigger microphone position.
+Vibraphone: soft mallets, velocity 2, first round robin, Main microphone position.
+
+MODIFICATIONS FOR LOOPIFY
+Selected a single recorded velocity layer per instrument (Salamander layer 8,
+FM Piano layer 2, medium Marimba, soft-mallet Vibraphone layer 2).
+Selected root notes for a compact multisample bank. Unrecorded notes are played
+by resampling the closest available recording in the application.
+Converted original FLAC/WAV to stereo 44.1 kHz 160 kbps MP3.
+Retained at most 12 seconds per piano recording, 10 seconds for FM Piano and
+Vibraphone, and 8 seconds for Marimba. Applied a 100 ms fade at the end.
+Applied fixed gain across each instrument's recordings to reduce level
+differences: Grand Piano 1x, FM Piano 2x, Marimba 16x, Vibraphone 0.8x.
+Mallet source note names were shifted up one octave in the application mapping,
+based on measured pitch, to match scientific notation (C4 = MIDI note 60).
+This is a compact edited selection; it does not reproduce the complete source
+instruments, velocity layers, pedal/resonance samples, or round robins.
+No endorsement by any original sample creator is implied.
+
+Every original sample URL, original and output SHA-256 checksum, output size,
+duration, and measured pitch are listed in samples/SOURCES.json.
+Please preserve these credits when redistributing the included Salamander samples.

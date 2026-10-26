@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import { BeatEngine, GROOVE_PRESETS, chooseLane, waveformPeaks } from '../dist/engine.js';
+import { BPM, STEP_SECONDS, sound } from './audio-fixtures.mjs';
 
 const source = await fs.readFile(new URL('../dist/capture-worklet.js', import.meta.url), 'utf8');
 function detector(sampleRate = 48000, quantum = 128) {
@@ -85,9 +86,8 @@ test('a louder peak remains detectable after sustained ambient noise',()=>{
   d.feed(.08,tone(.7));d.feed(1.9,noise(.07));
   assert.equal(d.captures().length,count+1, 'room noise must not latch the detector closed forever');
 });
-test('both rhythm families provide six valid two-bar 4/4 lanes',()=>{
-  assert.ok(GROOVE_PRESETS.filter(p=>p.family==='boom-bap').length>=2);
-  assert.ok(GROOVE_PRESETS.filter(p=>p.family==='trap').length>=2);
+test('the starter groove provides six simple unswung two-bar 4/4 lanes',()=>{
+  assert.equal(GROOVE_PRESETS.length,1,'initial rhythm must be predictable rather than randomly complex');
   for(const preset of GROOVE_PRESETS) {
     assert.equal(preset.lanes.length,6);
     for(const lane of preset.lanes){
@@ -95,7 +95,7 @@ test('both rhythm families provide six valid two-bar 4/4 lanes',()=>{
       assert.ok(lane.every(step=>Number.isInteger(step)&&step>=0&&step<32));
       assert.equal(new Set(lane).size,lane.length);
     }
-    assert.ok(preset.swing>=0&&preset.swing<.5);
+    assert.equal(preset.swing,0);
   }
 });
 test('a multi-syllable sound retains its later syllables and natural pause',()=>{
@@ -126,13 +126,15 @@ test('a continuing sound is bounded to 1.8 seconds without a short drum cutoff',
     assert.ok(pcm.subarray(Math.round(sampleRate*1.7)).some(value=>Math.abs(value)>.35),'recording continues through the end of its longer window');
   }
 });
-test('classifier fills every instrument before replacing existing recordings',()=>{
+test('repeated low sounds never fill clap or hat lanes merely because they are empty',()=>{
   const counts=[0,0,0,0,0,0];
-  const pcm=Float32Array.from({length:8192},(_,i)=>.5*Math.sin(i/48000*2*Math.PI*100));
-  for(let i=0;i<6;i++){
-    const lane=chooseLane(pcm,48000,counts);assert.equal(counts[lane],0);counts[lane]++;
+  const pcm=sound('kick');
+  for(let i=0;i<18;i++){
+    const lane=chooseLane(pcm,48000,counts);
+    assert.ok([0,2].includes(lane),'a low desk thud stays in a compatible low-frequency role');
+    counts[lane]++;
   }
-  assert.deepEqual(counts,[1,1,1,1,1,1]);
+  assert.ok(counts.every((count,lane)=>[0,2].includes(lane)||count===0));
 });
 test('waveform summaries are finite and bounded for silence, short clips and transients',()=>{
   for(const pcm of [new Float32Array(0),new Float32Array(256),new Float32Array([0,-.8,1,.2])]){
@@ -140,19 +142,19 @@ test('waveform summaries are finite and bounded for silence, short clips and tra
     assert.ok(peaks.every(value=>Number.isFinite(value)&&value>=0&&value<=1));
   }
 });
-test('transport is exactly 120 BPM, wraps at 32 steps and clears all samples on reset',()=>{
-  const engine=new BeatEngine();assert.equal(engine.bpm,120);
-  engine.context={currentTime:2,state:'suspended'};engine.origin=0;engine.state='running';
+test('transport is exactly 110 BPM, wraps at 32 steps and clears all samples on reset',()=>{
+  const engine=new BeatEngine();assert.equal(engine.bpm,BPM);
+  engine.context={currentTime:16*STEP_SECONDS,state:'suspended'};engine.origin=0;engine.state='running';
   assert.equal(engine.getPosition(),16);
-  engine.context.currentTime=4.125;assert.equal(engine.getPosition(),1);
+  engine.context.currentTime=33*STEP_SECONDS;assert.ok(Math.abs(engine.getPosition()-1)<1e-10);
   engine.samples[0].push({id:1});engine.reset();
   assert.ok(engine.samples.every(lane=>lane.length===0));assert.equal(engine.generation,1);
 });
-test('sample banks are bounded and every accepted open-hat sample owns audible pattern steps',()=>{
-  const engine=new BeatEngine();engine.preset=GROOVE_PRESETS.find(p=>p.name==='trap-1');
+test('supporting sample banks remain bounded and every retained recording owns audible pattern steps',()=>{
+  const engine=new BeatEngine();engine.preset=GROOVE_PRESETS[0];
   engine.context={currentTime:0,createBuffer(channels,length,sampleRate){return {duration:length/sampleRate,copyToChannel(){}};}};
-  engine.samples=Array.from({length:6},(_,lane)=>lane===4 ? [] : Array.from({length:3},(_,i)=>({id:-(lane*3+i+1),duration:1.2,steps:[]})));
-  const pcm=Float32Array.from({length:57600},(_,i)=>i%2?.5:-.5);
+  engine._acceptSample({pcm:sound('bass'),sampleRate:48000,peak:.35});
+  const pcm=sound('open-hat');
   for(let repeat=0;repeat<12;repeat++){
     engine._acceptSample({pcm,sampleRate:48000,peak:.5});
     for(const bank of engine.samples)assert.ok(bank.length<=3,'sample memory stays bounded');
@@ -164,8 +166,8 @@ test('sample banks are bounded and every accepted open-hat sample owns audible p
     assert.ok(steps.every(step=>engine.preset.lanes[4].includes(step)),'all retained onsets still belong to the selected groove');
     const sorted=[...steps].sort((a,b)=>a-b);
     for(let i=0;i<sorted.length;i++){
-      const start=sorted[i]*.125;
-      const next=sorted[(i+1)%sorted.length]*.125+(i===sorted.length-1?4:0);
+      const start=sorted[i]*STEP_SECONDS;
+      const next=sorted[(i+1)%sorted.length]*STEP_SECONDS+(i===sorted.length-1?32*STEP_SECONDS:0);
       assert.ok(next-start>=1.2,'complete samples have room before the next onset, including the loop seam');
     }
   }

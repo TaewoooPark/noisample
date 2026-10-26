@@ -1,4 +1,7 @@
 import { BeatEngine } from './engine.js';
+import { PLACEMENT_SECONDS } from './patterns.js';
+
+const placementMs = PLACEMENT_SECONDS * 1000;
 
 const canvas = document.querySelector('#instrument');
 const ctx = canvas.getContext('2d', { alpha: false });
@@ -18,6 +21,8 @@ let height = 0;
 let frameId;
 let geometry;
 let captureStarted = null;
+let melodyVisible = false;
+let melodyNotes = [];
 
 const stateDescriptions = {
   idle: '화면을 터치하고 마이크 사용을 허용하세요.',
@@ -53,6 +58,22 @@ const engine = new BeatEngine({
     hits.set(`${hit.sampleId}:${hit.step}`, when);
     if (hits.size > 256) hits.delete(hits.keys().next().value);
   },
+  onMelodyState(update) {
+    const next = typeof update === 'string' ? update : update.state;
+    if (next === 'playing' && !melodyVisible) {
+      melodyVisible = true;
+      resize();
+    }
+  },
+  onMelodyNote(note) {
+    if (!melodyVisible) {
+      melodyVisible = true;
+      resize();
+    }
+    const step = Number.isFinite(note.step) ? note.step : engine.getPosition();
+    melodyNotes.push({ ...note, step: (step % 32 + 32) % 32, born: performance.now() + Math.max(0, note.delayMs || 0) });
+    if (melodyNotes.length > 128) melodyNotes.splice(0, melodyNotes.length - 128);
+  },
 });
 
 function resize() {
@@ -71,7 +92,7 @@ function resize() {
     left: margin, right: width - margin, length: width - margin * 2,
     waveY: compact ? height * 0.20 : height * 0.245,
     waveHeight: Math.min(76, height * 0.085),
-    top, bottom, gap: (bottom - top) / 5,
+    top, bottom, gap: (bottom - top) / (melodyVisible ? 6 : 5),
     step: (width - margin * 2) / 32,
   };
 }
@@ -176,7 +197,9 @@ function sampleShape(sample, x, y, w, h, active = false, opacity = 1, from = 0, 
 
 function blockWidth(sample) {
   const secondsPerStep = 60 / engine.bpm / 4;
-  return Math.max(5, sample.duration / secondsPerStep * geometry.step);
+  const fullWidth = sample.duration / secondsPerStep * geometry.step;
+  // The pulse row shows distinct quarter-note triggers even when raw tails overlap.
+  return Math.max(5, sample.isAnchor ? Math.min(fullWidth, geometry.step * 3.6) : fullWidth);
 }
 
 function drawSequencer(now) {
@@ -194,13 +217,13 @@ function drawSequencer(now) {
     for (const sample of bank) {
       const arrived = arrivals.get(sample.id) || 0;
       const age = now - arrived;
-      if (age < (reducedMotion ? 100 : 660)) continue;
+      if (age < (reducedMotion ? 100 : placementMs)) continue;
       for (let i = 0; i < sample.steps.length; i++) {
         const s = sample.steps[i];
-        const fade = Math.min(1, Math.max(0, (age - (reducedMotion ? 100 : 660) - i * 16) / 140));
+        const fade = Math.min(1, Math.max(0, (age - (reducedMotion ? 100 : placementMs) - i * 10) / 100));
         const hitAt = hits.get(`${sample.id}:${s}`) || -10000;
         const sinceHit = now - hitAt;
-        const active = sinceHit >= 0 && sinceHit < sample.duration * 1000;
+        const active = sinceHit >= 0 && sinceHit < (sample.isAnchor ? 160 : sample.duration * 1000);
         const fullWidth = blockWidth(sample);
         const x = left + s * step;
         const w = Math.min(fullWidth, right - x);
@@ -212,6 +235,7 @@ function drawSequencer(now) {
       }
     }
   }
+  if (melodyVisible) drawMelody(now);
   if (state === 'running' || state === 'suspended') {
     const pos = engine.getPosition();
     const x = left + (Number.isFinite(pos) ? pos : 0) * step;
@@ -221,9 +245,38 @@ function drawSequencer(now) {
   }
 }
 
+function drawMelody(now) {
+  const { left, right, top, gap, step } = geometry;
+  const y = top + gap * 6;
+  const secondsPerStep = 60 / engine.bpm / 4;
+  const loopMs = secondsPerStep * 32 * 1000;
+  line(left, y, right, y, '#dedede', 0.8);
+  for (let beat = 0; beat <= 32; beat += 4) {
+    line(left + beat * step, y - 2, left + beat * step, y + 2, '#ddd', 0.8);
+  }
+  melodyNotes = melodyNotes.filter(note => now - note.born < loopMs);
+  for (const note of melodyNotes) {
+    const age = now - note.born;
+    if (age < 0) continue;
+    const active = state === 'running' && age < note.duration * 1000;
+    const pitch = Math.max(-1, Math.min(1, (note.midi - 64) / 24));
+    const noteY = y - pitch * Math.min(16, gap * 0.3);
+    const noteHeight = note.part === 'chord' ? 2 : 4;
+    const x = left + note.step * step;
+    const fullWidth = Math.max(3, note.duration / secondsPerStep * step);
+    const firstWidth = Math.min(fullWidth, right - x);
+    ctx.save();
+    ctx.globalAlpha = active ? 1 : 0.3;
+    ctx.fillStyle = '#111';
+    ctx.fillRect(x, noteY - noteHeight / 2, firstWidth, noteHeight);
+    if (fullWidth > firstWidth) ctx.fillRect(left, noteY - noteHeight / 2, Math.min(fullWidth - firstWidth, right - left), noteHeight);
+    ctx.restore();
+  }
+}
+
 function drawFlights(now) {
   const { left, right, waveY, top, gap, step } = geometry;
-  flights = flights.filter(f => now - f.born < 950);
+  flights = flights.filter(f => now - f.born < placementMs + 220);
   for (const flight of flights) {
     const age = now - flight.born;
     if (reducedMotion) continue;
@@ -232,13 +285,13 @@ function drawFlights(now) {
     const startX = right - captureWidth;
     const destX = left + sample.steps[0] * step;
     const destY = top + sample.lane * gap;
-    const p = Math.min(1, Math.max(0, (age - 160) / 500));
+    const p = Math.min(1, Math.max(0, (age - 60) / (placementMs - 60)));
     const ease = 1 - Math.pow(1 - p, 3);
     const x = startX + (destX - startX) * ease;
     const y = waveY + (destY - waveY) * ease;
     const h = Math.min(26, gap * 0.42);
     const targetWidth = Math.min(blockWidth(sample), right - destX);
-    const w = (captureWidth + (targetWidth - captureWidth) * ease) * Math.min(1, age / 130);
+    const w = (captureWidth + (targetWidth - captureWidth) * ease) * Math.min(1, age / 60);
     if (p < 1) {
       // A stretched trace lets the original cut visibly travel into its lane.
       ctx.save(); ctx.globalAlpha = Math.sin(p * Math.PI) * 0.20;
@@ -250,8 +303,8 @@ function drawFlights(now) {
       ctx.closePath(); ctx.fill(); ctx.restore();
       sampleShape(sample, x, y, w, h, false);
     } else {
-      const alpha = Math.max(0, 1 - (age - 660) / 290);
-      const expand = (age - 660) / 35;
+      const alpha = Math.max(0, 1 - (age - placementMs) / 220);
+      const expand = (age - placementMs) / 35;
       ctx.save(); ctx.globalAlpha = alpha * 0.35;
       ctx.strokeStyle = '#111'; ctx.lineWidth = 0.8;
       ctx.strokeRect(destX - expand, destY - h / 2 - expand, targetWidth + expand * 2, h + expand * 2);
@@ -272,17 +325,29 @@ function frame(now) {
 }
 
 async function activate() {
-  if (state === 'running' || state === 'requesting') return;
+  // Every completed tap can unlock iOS audio, including while permission/setup
+  // is pending. The engine coalesces permission requests and running transports.
   try { await engine.start(); } catch { /* The engine exposes actionable states to the live region. */ }
 }
 
-canvas.addEventListener('pointerdown', activate);
+canvas.addEventListener('click', activate);
 canvas.addEventListener('keydown', event => {
   if (event.code === 'Space' || event.code === 'Enter') { event.preventDefault(); activate(); }
 });
 document.querySelector('#reset').addEventListener('click', () => {
-  engine.destroy();
-  location.reload();
+  history.fill(0);
+  historyHead = 0;
+  waveCarry = 0;
+  arrivals.clear();
+  hits.clear();
+  flights = [];
+  captureStarted = null;
+  melodyVisible = false;
+  melodyNotes = [];
+  resize();
+  engine.reset();
+  // Keep this call inside the same trusted click; no reload or second prompt.
+  activate();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) cancelAnimationFrame(frameId);
