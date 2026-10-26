@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#ffffff">
+    <meta name="description" content="Nois(ampl)e turns the sound around you into a 120 BPM beat. Tap, allow the microphone, and let the room play.">
+    <meta property="og:title" content="Nois(ampl)e">
+    <meta property="og:description" content="The room is already playing. A live microphone sampler that turns passing sounds into rhythm.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://taewooopark.github.io/noisample/">
+    <link rel="canonical" href="https://taewooopark.github.io/noisample/">
+    <title>Nois(ampl)e</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M3 16h7l3-10 6 20 3-10h7' fill='none' stroke='black' stroke-width='2'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <main aria-label="주변 소리로 비트 만들기">
+      <canvas id="instrument" tabindex="0" role="application" aria-label="화면을 터치하거나 Enter 키를 눌러 마이크를 시작하세요. 들어오는 소리를 자동으로 모아 120 BPM 비트를 만듭니다."></canvas>
+      <button id="reset" type="button" aria-label="처음부터 다시 수집하기" title="">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19.25 8.5A7.5 7.5 0 1 0 19.5 15M19.5 4.5v4.75h-4.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <p id="status" class="sr-only" role="status" aria-live="polite">화면을 터치하고 마이크 사용을 허용하세요.</p>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "noisample",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nois(ampl)e — an ephemeral browser instrument that turns the room into a 120 BPM beat.",
+  "homepage": "https://taewooopark.github.io/noisample/",
+  "repository": { "type": "git", "url": "https://github.com/TaewoooPark/noisample.git" },
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check dist/app.js && node --check dist/engine.js && node --check dist/capture-worklet.js"
+  }
+}
