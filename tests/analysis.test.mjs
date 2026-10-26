@@ -39,27 +39,50 @@ for(const sampleRate of [44100,48000]) {
   });
 }
 
-test('repeated claps only occupy clap and hat roles even when all low roles are empty',()=>{
-  for(const kind of ['clap','phone-clap']) {
+test('six ordinary repeated sounds fill six distinct roles while keeping their natural role first',()=>{
+  for(const [kind,naturalLane] of [['phone-clap',1],['desk-thud',0],['percussion',5]]) {
     const counts=[0,0,0,0,0,0];
     const pcm=sound(kind);
-    for(let index=0;index<24;index++) {
-      const result=classifySample(pcm,48000,counts);
-      assert.ok([1,3,4].includes(result.lane));
-      assert.ok(result.compatibleLanes.every(lane=>[1,3,4].includes(lane)));
+    const original=pcm.slice();
+    let fallbackCount=0;
+    for(let index=0;index<6;index++) {
+      const result=classifySample(pcm,48000,counts,index ? [naturalLane] : []);
+      if(index===0)assert.equal(result.lane,naturalLane,'the first sound keeps its best acoustic role');
+      assert.equal(counts[result.lane],0,'each captured sound makes progress on an empty row');
+      assert.equal(result.assignment,result.compatibleLanes.includes(result.lane)?'matched':'fill');
+      assert.ok(Number.isFinite(result.matchScore)&&result.matchScore>0&&result.matchScore<=1);
+      if(result.assignment==='fill')fallbackCount++;
       counts[result.lane]++;
     }
-    assert.equal(counts[0],0,'kick stays empty until a compatible sound arrives');
-    assert.equal(counts[2],0,'bass stays empty until a compatible sound arrives');
-    assert.equal(counts[5],0,'an unrelated percussion slot is not filled for visual completion');
+    assert.deepEqual(counts,[1,1,1,1,1,1],`${kind} alone can complete the instrument`);
+    assert.ok(fallbackCount>0,'fallback roles prevent acoustic classification from blocking completion');
+    assert.deepEqual(pcm,original,'permissive placement still never changes microphone PCM');
   }
 });
 
-test('excluding every compatible role rejects a sound instead of routing it to an unrelated vacancy',()=>{
+test('natural acoustic roles win when both matched and fallback vacancies are available',()=>{
   for(const role of ROLE_NAMES) {
     const pcm=sound(role);
     const first=classifySample(pcm,48000);
-    const excluded=classifySample(pcm,48000,[0,0,0,0,0,0],first.compatibleLanes);
+    const counts=Array(6).fill(1);
+    counts[first.lane]=0;
+    counts[(first.lane+1)%6]=0;
+    const selected=classifySample(pcm,48000,counts);
+    assert.equal(selected.lane,first.lane);
+    assert.equal(selected.assignment,'matched');
+    assert.equal(classifySample(pcm,48000,Array(6).fill(1)).assignment,'matched','a complete instrument returns to natural matches for updates');
+  }
+});
+
+test('excluded anchor roles allow fallback placement, but excluding every row returns no assignment',()=>{
+  for(const role of ROLE_NAMES) {
+    const pcm=sound(role);
+    const first=classifySample(pcm,48000);
+    const fallback=classifySample(pcm,48000,[0,0,0,0,0,0],first.compatibleLanes);
+    assert.ok(Number.isInteger(fallback.lane));
+    assert.ok(!first.compatibleLanes.includes(fallback.lane));
+    assert.equal(fallback.assignment,'fill');
+    const excluded=classifySample(pcm,48000,[0,0,0,0,0,0],[0,1,2,3,4,5]);
     assert.equal(excluded.lane,null);
     assert.equal(excluded.role,null);
   }

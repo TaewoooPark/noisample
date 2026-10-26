@@ -54,7 +54,7 @@ Keep the page open while playing. Headphones help separate the room's sound from
 1. Touch. Let the browser connect to your microphone.
 2. Make a sound. A peak rises above the surrounding level.
 3. Hear the pulse. The first recording repeats on every quarter note.
-4. Add contrast. Different sounds find suitable roles around that pulse.
+4. Keep playing. Each new recording fills the closest available role.
 5. Hear it open up. When all six roles are filled, a keyboard enters on the next bar.
 6. Refresh. Let this room's rhythm go and start another.
 ```
@@ -74,7 +74,9 @@ The first recording starts on beat one about 300 ms after capture completes, rat
 | Open hi-hat | Bright sounds with longer ringing tails become open-hat accents. |
 | Percussion | Midrange knocks and resonances add supporting accents. |
 
-Frequency-band energy, spectral shape, attack and decay guide assignment; this analysis does not alter the recording. Empty lanes take priority only among compatible roles. Repeating a clap will not fill the bass lane just because it is empty. Low impacts can serve kick or bass; a bright clap can serve clap or hat. These are acoustic heuristics, so a hollow desk, a padded desk and different microphones can yield different assignments.
+Frequency-band energy, spectral shape, attack and decay rank the roles; this analysis does not alter the recording. A low impact first favors kick or bass, and a bright clap favors clap or hat. Every new recording fills the best remaining empty lane, so **six captured sounds complete all six roles**, even when you repeat the same kind of sound. You do not need to find a special sound for each lane.
+
+When a sound's preferred roles are already occupied, it provisionally supports the closest remaining role. Once the instrument is full, new recordings return to their preferred roles, replacing provisional material when a better match arrives. These are acoustic heuristics, so different surfaces and microphones can yield different assignments. A fallback changes timing and placement only; a clap used in a bass position still sounds like the recorded clap.
 
 The first recording anchors whichever lane it belongs to with all four beats. Each other lane holds up to three recordings, limited by the positions that can fit complete clips; new arrivals eventually replace its oldest sound. Supporting patterns can become sparser as longer sounds arrive. Try a low desk thud, a clap, a low hum, a short bright tap, ringing keys or coins, and a midrange wooden knock to explore the six roles.
 
@@ -82,7 +84,7 @@ The six instrument names describe rhythmic roles, not sound transformations. Eve
 
 ## When the keyboard arrives
 
-All six roles must contain a suitable recording before the accompaniment begins. It enters on the next complete bar after the final recording lands. A seventh line appears for the keyboard notes; the page keeps the same white canvas, black marks and single reset control.
+After six captures fill the six roles, accompaniment enters on the next complete bar after the final recording lands. A seventh line appears for the keyboard notes; the page keeps the same white canvas, black marks and single reset control.
 
 The accompaniment has **12 keyboard colors**: grand piano, FM piano, marimba and vibraphone recordings, plus eight synthesized keys spanning felt, glass, plucked, warm electric, bell, hollow, airy and analog tones. Eight-bar phrases combine four scale families, eight chord paths, eight rhythm motifs and eight melodic contours. Each phrase develops its response and changes keyboard color; reset chooses a new musical seed. Soft, closely voiced chords support the lead. A stable low pitched recording can suggest the key without retuning that recording.
 
@@ -147,7 +149,7 @@ npm run check
 npm test
 ```
 
-The local server runs at `http://localhost:4173`. `dist/capture-worklet.js` detects and extracts transients. `dist/analysis.js` measures recordings and selects compatible roles. `dist/engine.js` manages the microphone, raw sample voices and shared audio clock. `dist/patterns.js` defines the starter groove and placement timing. `dist/melody.js` generates and plays the keyboard phrases. `dist/app.js` draws the waveform, sample movement and sequencer. Tests exercise capture, frequency classification, PCM preservation, timing, the six-role melody gate, reset and permission recovery.
+The local server runs at `http://localhost:4173`. `dist/capture-worklet.js` detects and extracts transients. `dist/analysis.js` measures recordings and ranks available roles. `dist/engine.js` manages the microphone, raw sample voices and shared audio clock. `dist/patterns.js` defines the starter groove and placement timing. `dist/melody.js` generates and plays the keyboard phrases. `dist/app.js` draws the waveform, sample movement and sequencer. Tests exercise capture, frequency classification, automatic lane filling, PCM preservation, timing, the six-role melody gate, reset and permission recovery.
 
 Startup loads the worklet alongside microphone permission and never waits for an unresolved `AudioContext.resume()` promise before building the capture graph. Completed taps can retry audio even while setup is pending. A bounded recovery checks the audio clock or worklet heartbeat; if a context stays stalled, the next tap can rebuild it with the existing live microphone. Reset keeps that connection instead of navigating away.
 

@@ -219,33 +219,59 @@ test('later sounds cannot replace the initial quarter-note anchor, while reset a
   assert.deepEqual(replacement.buffer.getChannelData(0),newPCM);
 });
 
-test('actual repeated clap captures cannot fill low lanes or overwrite their classified anchor',()=>{
-  const engine=new BeatEngine();
-  engine.context=makeContext();
-  const pcm=sound('phone-clap');
-  engine._acceptSample({pcm,sampleRate:48000,peak:.5});
-  const anchor=engine.samples[1][0];
-  assert.equal(anchor.isAnchor,true);
-  for(let index=0;index<20;index++)engine._acceptSample({pcm,sampleRate:48000,peak:.5});
-  assert.equal(engine.samples[1][0],anchor);
-  assert.ok(engine.samples[3].length>0,'a second compatible clap may provide a short high-frequency accent');
-  assert.equal(engine.samples[0].length,0);
-  assert.equal(engine.samples[2].length,0);
-  assert.equal(engine.samples[5].length,0);
-  for(const sample of engine.samples.flat()) {
-    assert.ok(sample.classification.compatibleLanes.includes(sample.lane));
-    assert.deepEqual(sample.buffer.getChannelData(0),pcm);
+test('six repeated captures fill every row without changing source PCM or the original pulse',()=>{
+  for(const kind of ['phone-clap','desk-thud','percussion']) {
+    const engine=new BeatEngine();
+    engine.context=makeContext();
+    const pcm=sound(kind);
+    engine._acceptSample({pcm,sampleRate:48000,peak:.5});
+    const anchor=engine.samples.flat().find(sample=>sample.isAnchor);
+    for(let index=1;index<6;index++) {
+      engine._acceptSample({pcm,sampleRate:48000,peak:.5});
+      assert.equal(engine.samples.filter(bank=>bank.length).length,index+1,'each completed capture fills one empty row');
+    }
+    assert.ok(engine.samples.every(bank=>bank.length===1));
+    assert.equal(engine.samples[anchor.lane][0],anchor);
+    assert.deepEqual(anchor.steps,QUARTER_STEPS);
+    assert.ok(engine.samples.flat().some(sample=>sample.classification.assignment==='fill'));
+    for(const sample of engine.samples.flat()) {
+      assert.deepEqual(sample.buffer.getChannelData(0),pcm,'fallback assignment uses the complete original microphone recording');
+      assert.equal(sample.duration,pcm.length/48000);
+      assert.ok(sample.steps.length>0,'every row owns audible onsets');
+    }
   }
 });
 
-test('an incompatible replacement is ignored when its only suitable role contains the anchor',()=>{
+test('repeating an anchor-only timbre continues placement instead of silently discarding captures',()=>{
   const captured=[];
   const engine=new BeatEngine({onCapture:sample=>captured.push(sample)});
   engine.context=makeContext();
   const pcm=sound('percussion');
   engine._acceptSample({pcm,sampleRate:48000,peak:.5});
-  for(let index=0;index<6;index++)assert.equal(engine._acceptSample({pcm,sampleRate:48000,peak:.5}),null);
-  assert.equal(captured.length,1,'unusable captures do not produce placement events');
-  assert.equal(engine.samples.flat().length,1);
+  for(let index=1;index<6;index++)assert.ok(engine._acceptSample({pcm,sampleRate:48000,peak:.5}));
+  assert.equal(captured.length,6,'every completed capture produces a visible placement event');
+  assert.equal(engine.samples.flat().length,6);
   assert.equal(engine.samples[5][0],captured[0]);
+  assert.deepEqual(captured[0].steps,QUARTER_STEPS);
+});
+
+test('a better acoustic match replaces fallback recordings while preserving the anchor',()=>{
+  const engine=new BeatEngine();
+  engine.context=makeContext();
+  const clap=sound('phone-clap');
+  for(let index=0;index<6;index++)engine._acceptSample({pcm:clap,sampleRate:48000,peak:.5});
+  const anchor=engine.samples[1][0];
+  const fallbackKick=engine.samples[0][0];
+  assert.equal(fallbackKick.classification.assignment,'fill');
+  const desk=sound('desk-thud');
+  const matched=engine._acceptSample({pcm:desk,sampleRate:48000,peak:.5});
+  assert.equal(matched.lane,0,'a low impact improves the kick role once the instrument is complete');
+  assert.equal(matched.classification.assignment,'matched');
+  assert.deepEqual(engine.samples[0],[matched],'the better match removes the provisional recording from the lane');
+  assert.ok(matched.evictedIds.includes(fallbackKick.id),'the visualization can discard the provisional recording');
+  assert.deepEqual(matched.buffer.getChannelData(0),desk);
+  assert.equal(engine.samples[1][0],anchor);
+  assert.deepEqual(anchor.buffer.getChannelData(0),clap);
+  assert.deepEqual(anchor.steps,QUARTER_STEPS);
+  assert.ok(engine.samples.every(bank=>bank.length>0));
 });

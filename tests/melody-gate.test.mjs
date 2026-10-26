@@ -38,7 +38,7 @@ function assertOnBar(engine,event) {
   assert.equal(event.options.bpm,BPM,'keyboard and microphone loops share 110 BPM');
 }
 
-test('the keyboard waits for all six compatible microphone roles and starts once on a shared bar',()=>{
+test('the keyboard waits for all six microphone rows and starts once on a shared bar',()=>{
   const engine=engineFixture();
   try {
     for(const role of ROLE_NAMES.slice(0,-1)) {
@@ -75,18 +75,26 @@ test('every individual missing role keeps the keyboard silent, even if the other
   }
 });
 
-test('repeating phone claps cannot accidentally complete the keyboard activation gate',()=>{
-  const engine=engineFixture();
-  try {
-    for(let index=0;index<24;index++) {
-      capture(engine,'phone-clap');
-      engine.context.currentTime+=.2;
-      engine._schedule();
-    }
-    assert.equal(engine.samples[0].length,0);
-    assert.equal(engine.samples[2].length,0);
-    assert.equal(engine.melody.starts.length,0,'number of captures is not the readiness condition');
-  } finally {engine._stopTransport();}
+test('six repeated everyday sounds can complete the ensemble and start the keyboard on the next bar',()=>{
+  for(const kind of ['phone-clap','desk-thud','percussion']) {
+    const engine=engineFixture();
+    try {
+      for(let index=0;index<6;index++) {
+        capture(engine,kind);
+        engine.context.currentTime+=.2;
+        engine._schedule();
+        assert.equal(engine.samples.filter(bank=>bank.length).length,index+1);
+        assert.equal(engine.melody.starts.length,index===5?1:0,'five recordings cannot bypass the gate; the sixth completes it');
+      }
+      assert.ok(engine.samples.every(bank=>bank.length>0));
+      assertOnBar(engine,engine.melody.starts[0]);
+      for(let index=0;index<8;index++) {
+        capture(engine,kind);
+        engine._schedule();
+      }
+      assert.equal(engine.melody.starts.length,1,'later captures improve the beat without restarting its accompaniment');
+    } finally {engine._stopTransport();}
+  }
 });
 
 test('pausing cancels keyboard playback and resuming re-enters once on the new transport bar',()=>{
@@ -156,6 +164,7 @@ test('only a sustained stable bass can guide keyboard key without changing the r
     capture(engine,'desk-thud');
     assert.equal(engine.samples[2].length,1,'the second low impact uses the compatible bass role');
     assert.equal(engine._melodyRoot(),undefined,'a short desk resonance is not a dependable musical key');
+    for(const role of ['clap','closed-hat','open-hat','percussion'])capture(engine,role);
     capture(engine,'bass');
     const bass=engine.samples[2].at(-1);
     const before=bass.buffer.getChannelData(0).slice();

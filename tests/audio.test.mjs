@@ -126,15 +126,17 @@ test('a continuing sound is bounded to 1.8 seconds without a short drum cutoff',
     assert.ok(pcm.subarray(Math.round(sampleRate*1.7)).some(value=>Math.abs(value)>.35),'recording continues through the end of its longer window');
   }
 });
-test('repeated low sounds never fill clap or hat lanes merely because they are empty',()=>{
+test('repeated low sounds prefer kick and bass, then complete the remaining rhythm roles',()=>{
   const counts=[0,0,0,0,0,0];
   const pcm=sound('kick');
-  for(let i=0;i<18;i++){
+  for(let i=0;i<6;i++){
     const lane=chooseLane(pcm,48000,counts);
-    assert.ok([0,2].includes(lane),'a low desk thud stays in a compatible low-frequency role');
+    if(i<2)assert.equal(lane,[0,2][i],'low recordings first use the natural kick and bass roles');
+    assert.equal(counts[lane],0,'the next recording fills a row instead of repeatedly replacing an occupied one');
     counts[lane]++;
   }
-  assert.ok(counts.every((count,lane)=>[0,2].includes(lane)||count===0));
+  assert.deepEqual(counts,[1,1,1,1,1,1]);
+  assert.ok([0,2].includes(chooseLane(pcm,48000,counts)),'after completing the rows, further low recordings update a natural role');
 });
 test('waveform summaries are finite and bounded for silence, short clips and transients',()=>{
   for(const pcm of [new Float32Array(0),new Float32Array(256),new Float32Array([0,-.8,1,.2])]){

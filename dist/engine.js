@@ -381,8 +381,8 @@ export class BeatEngine {
     const firstCapture = this.anchorSampleId === null;
     const classification = classifySample(pcm,data.sampleRate,this.samples.map(samples=>samples.length),firstCapture ? [] : [this.anchorLane]);
     const lane = classification.lane;
-    // A recording must suit its role. Repeating one sound does not force it
-    // into unrelated empty lanes just to complete the instrument.
+    // Fill the closest available role, preserving the initial quarter-note
+    // anchor. Frequency analysis guides placement without blocking progress.
     if (lane === null) return null;
     if (firstCapture) {
       this.origin = this.context.currentTime + PLACEMENT_SECONDS;
@@ -396,6 +396,16 @@ export class BeatEngine {
     sample.buffer.copyToChannel(pcm,0);
     const samples=this.samples[lane];
     const evicted=[];
+    // A later natural match takes over from provisional material in this role.
+    // It still uses only the newly captured PCM, never a replacement drum pack.
+    if (classification.assignment === 'matched') {
+      for (let index=samples.length-1;index>=0;index--) {
+        if (!samples[index].isAnchor && samples[index].classification?.assignment === 'fill') {
+          evicted.push(samples[index].id);
+          samples.splice(index,1);
+        }
+      }
+    }
     samples.push(sample);
     while(samples.length>3)evicted.push(samples.shift().id);
     evicted.push(...this._assignSteps(lane));

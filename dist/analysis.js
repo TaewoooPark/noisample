@@ -164,10 +164,23 @@ export function classifySample(pcm, sampleRate, occupiedCounts = [0,0,0,0,0,0], 
     confidence = f.flatness < 0.05 && f.centroid > 300 && f.centroid < 4500 ? 0.82 : 0.58;
   }
   const compatibleLanes = candidates.map(([lane]) => lane);
-  const available = candidates.filter(([lane]) => !excludedLanes.includes(lane));
+  // Timbre ranks the first choice; it must not become an admission test. Once
+  // those roles are occupied, use the closest remaining rhythmic role so six
+  // ordinary captures can complete a session without six special sound types.
+  const fallback = {
+    'low-impact': [[5,.54],[1,.38],[3,.24],[4,.18]],
+    'low-resonance': [[5,.50],[4,.32],[1,.24],[3,.18]],
+    'bright-ring': [[5,.56],[1,.47],[2,.20],[0,.14]],
+    'bright-tick': [[1,.58],[5,.50],[0,.23],[2,.14]],
+    'broadband-clap': [[5,.58],[4,.50],[0,.30],[2,.16]],
+    'mid-resonance': [[1,.60],[0,.45],[2,.40],[3,.33],[4,.28]],
+  }[category];
+  const ranked = [...candidates,...fallback.filter(([lane]) => !compatibleLanes.includes(lane))];
+  const available = ranked.filter(([lane]) => !excludedLanes.includes(lane));
   const vacant = available.filter(([lane]) => !occupiedCounts[lane]);
-  const options = vacant.length ? vacant : available;
+  const preferred = available.filter(([lane]) => compatibleLanes.includes(lane));
+  const options = vacant.length ? vacant : preferred.length ? preferred : available;
   const selected = options.reduce((best, item) => !best || item[1] - (occupiedCounts[item[0]] || 0)*0.04 > best[1] - (occupiedCounts[best[0]] || 0)*0.04 ? item : best, null);
   const lane = selected?.[0] ?? null;
-  return {lane,role:lane === null ? null : ROLE_NAMES[lane],category,confidence:confidence*(selected?.[1] || 0),features,compatibleLanes};
+  return {lane,role:lane === null ? null : ROLE_NAMES[lane],category,assignment:lane === null ? null : compatibleLanes.includes(lane) ? 'matched' : 'fill',matchScore:selected?.[1] || 0,confidence:confidence*(selected?.[1] || 0),features,compatibleLanes};
 }
